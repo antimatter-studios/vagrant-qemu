@@ -70,7 +70,7 @@ Notes:
 ### VirtioFS synced folders
 
 Install `virtiofsd` on the host and use a Linux guest with VirtioFS support.
-The plugin searches `PATH`, `/usr/libexec`, and `/usr/lib/qemu` for the daemon;
+The plugin searches `PATH`, `/usr/libexec`, `/usr/lib`, and `/usr/lib/qemu` for the daemon;
 set `qe.virtiofsd_bin` when it is installed elsewhere.
 
 ```ruby
@@ -83,6 +83,12 @@ end
 `virtiofs_guest_uid` and `virtiofs_guest_gid` default to `1000`. UID/GID
 translation is used when the installed daemon supports it. Additional daemon
 arguments can be passed through `extra_virtiofsd_args` as an array.
+
+On Linux, QEMU uses a shared memfd memory backend for the vhost-user-fs device.
+On macOS, it uses a shared file backed memory object. The provider supports
+standalone `virtiofsd` with `--shared-dir` and older QEMU packaged daemons
+with `-o source=`. The daemon runs in its own process group so the share stays
+available after `vagrant up` exits.
 
 ## Box format
 

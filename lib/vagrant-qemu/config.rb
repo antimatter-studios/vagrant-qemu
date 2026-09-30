@@ -161,7 +161,7 @@ module VagrantPlugins
 
       def find_virtiofsd
         candidates = ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).map { |dir| File.join(dir, "virtiofsd") }
-        candidates.concat(%w(/usr/libexec/virtiofsd /usr/lib/qemu/virtiofsd))
+        candidates.concat(%w(/usr/libexec/virtiofsd /usr/lib/virtiofsd /usr/lib/qemu/virtiofsd))
         candidates.find { |path| File.file?(path) && File.executable?(path) }
       end
 

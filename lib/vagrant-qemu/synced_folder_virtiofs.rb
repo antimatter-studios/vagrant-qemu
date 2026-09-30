@@ -33,11 +33,24 @@ module VagrantPlugins
         virtiofsd = machine.provider_config.virtiofsd_bin
         memory = machine.provider_config.memory
 
-        mem_path = File.join(Dir.tmpdir, "vagrant-qemu-#{machine.id}-mem")
-        extra_args = %W(
-          -object memory-backend-file,id=mem,size=#{memory},mem-path=#{mem_path},share=on
-          -numa node,memdev=mem
-        )
+        if RUBY_PLATFORM.include?("linux")
+          # Linux can export an anonymous shared memory object to virtiofsd.
+          # This avoids a large temporary file and is the recommended QEMU
+          # backend for vhost-user devices on Linux.
+          extra_args = %W(
+            -object memory-backend-memfd,id=mem,size=#{memory},share=on
+            -numa node,memdev=mem
+          )
+        else
+          # macOS QEMU needs a file-backed shared memory object.
+          mem_path = File.join(Dir.tmpdir, "vagrant-qemu-#{machine.id}-mem")
+          extra_args = %W(
+            -object memory-backend-file,id=mem,size=#{memory},mem-path=#{mem_path},share=on
+            -numa node,memdev=mem
+          )
+        end
+
+        virtiofsd_help = virtiofsd_help_text(virtiofsd)
 
         sorted_folders = folders.sort_by { |_id, opts| opts[:guestpath] }
         sorted_folders.each_with_index do |(_id, folder_opts), i|
@@ -54,16 +67,26 @@ module VagrantPlugins
           log_file = virtiofs_dir.join("#{tag}.log").to_s
           host_uid = Process.uid
           host_gid = Process.gid
-          virtiofsd_args = [
-            virtiofsd,
-            "--socket-path=#{socket_path}",
-            "--shared-dir=#{hostpath}",
-            "--sandbox=none",
-            "--inode-file-handles=never",
-          ]
+          virtiofsd_args = [virtiofsd, "--socket-path=#{socket_path}"]
+
+          # Current standalone virtiofsd uses --shared-dir, while the older
+          # QEMU packaged daemon uses the -o source= form.
+          if virtiofsd_help.include?("--shared-dir")
+            virtiofsd_args << "--shared-dir=#{hostpath}"
+          else
+            virtiofsd_args += ["-o", "source=#{hostpath}"]
+          end
+
+          if virtiofsd_help.include?("--sandbox")
+            virtiofsd_args << "--sandbox=none"
+          elsif virtiofsd_help.match?(/(?:^|[\s,])sandbox(?:[=\s,]|$)/)
+            virtiofsd_args += ["-o", "sandbox=none"]
+          end
+
+          virtiofsd_args << "--inode-file-handles=never" if virtiofsd_help.include?("--inode-file-handles")
 
           # Add UID/GID mapping if virtiofsd supports it (v1.13+)
-          translate_supported = virtiofsd_help(virtiofsd).include?("--translate-uid")
+          translate_supported = virtiofsd_help.include?("--translate-uid")
           if translate_supported
             virtiofsd_args += [
               "--translate-uid", "map:#{machine.provider_config.virtiofs_guest_uid}:#{host_uid}:1",
@@ -73,7 +96,9 @@ module VagrantPlugins
           # Append user-supplied extra virtiofsd args from provider config
           extra_vfs = machine.provider_config.extra_virtiofsd_args
           virtiofsd_args += extra_vfs if extra_vfs.is_a?(Array) && !extra_vfs.empty?
-          pid = spawn(*virtiofsd_args, [:out, :err] => [log_file, "w"])
+          # Keep the daemon outside Vagrant's process group so it survives
+          # after `vagrant up` exits and continues serving mounted folders.
+          pid = spawn(*virtiofsd_args, in: File::NULL, [:out, :err] => [log_file, "w"], pgroup: true)
           waiter = Process.detach(pid)
 
           # The socket path can appear before virtiofsd starts listening.
@@ -170,9 +195,9 @@ module VagrantPlugins
         File.delete(socket_path) if socket_path && File.exist?(socket_path)
       end
 
-      def virtiofsd_help(binary)
-        output, _status = Open3.capture2e(binary, "--help")
-        output
+      def virtiofsd_help_text(binary)
+        output, status = Open3.capture2e(binary, "--help")
+        status.success? ? output : ""
       rescue Errno::ENOENT, Errno::EACCES
         ""
       end
