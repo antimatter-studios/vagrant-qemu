@@ -152,6 +152,20 @@ class VirtiofsTest < Minitest::Test
     refute args.any? { |arg| arg.start_with?("--translate-uid") }
   end
 
+  def test_prepare_does_not_duplicate_qemu_arguments_on_reload
+    configure_fake_daemon("--socket-path --shared-dir")
+    @machine.provider_config.extra_qemu_args = ["-boot", "order=c"]
+    adapter = VagrantPlugins::QEMU::SyncedFolderVirtioFS.new
+
+    2.times { adapter.prepare(@machine, folders, {}) }
+
+    args = @machine.provider_config.extra_qemu_args
+    assert_equal 1, args.count("memory-backend-memfd,id=mem,size=256M,share=on") if RUBY_PLATFORM.include?("linux")
+    assert_equal 1, args.count { |arg| arg.start_with?("memory-backend-file,id=mem,") } if RUBY_PLATFORM.include?("darwin")
+    assert_equal 1, args.count("vhost-user-fs-pci,chardev=char_virtiofs0,tag=virtiofs0")
+    assert_equal ["-boot", "order=c"], args.first(2)
+  end
+
   def test_mount_quotes_guest_path
     @machine.config = OpenStruct.new(
       vm: OpenStruct.new(

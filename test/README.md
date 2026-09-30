@@ -7,7 +7,8 @@ ruby test/virtiofs_test.rb
 ```
 
 These tests exercise provider defaults, modern and legacy virtiofsd arguments,
-the QEMU memory backend and device arguments, and guest mount path quoting.
+the QEMU memory backend and device arguments, reload argument deduplication,
+and guest mount path quoting.
 They launch a small fake daemon, so no Vagrant or QEMU installation is needed.
 The GitHub Actions matrix runs them on both operating systems.
 
@@ -30,5 +31,6 @@ ruby test/vagrant_virtiofs_smoke.rb
 The default box is `cloud-image/debian-12` for amd64. Set
 `VAGRANT_TEST_ARCH=arm64` on an ARM host, and
 `VAGRANT_TEST_QEMU_DIR` if ARM firmware is outside QEMU's default directory.
-The script checks the guest mount, reads a host file, writes a file back, then
-destroys the VM. CI runs this stage on Linux with TCG for portable virtualization.
+The script checks the guest mount, reads a host file, writes a file back,
+halts the VM to verify daemon cleanup, then destroys it. CI runs this stage
+on Linux with TCG for portable virtualization.
