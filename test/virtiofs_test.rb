@@ -72,7 +72,8 @@ class VirtiofsTest < Minitest::Test
         virtiofs_guest_uid: 1000,
         virtiofs_guest_gid: 1000,
         extra_virtiofsd_args: [],
-        extra_qemu_args: []
+        extra_qemu_args: [],
+        virtiofs_qemu_args: []
       ),
       Pathname.new(File.join(@dir, "machine")),
       SecureRandom.hex(8),
@@ -129,10 +130,10 @@ class VirtiofsTest < Minitest::Test
     assert_includes args, "--translate-uid"
     assert_includes args, "--translate-gid"
     assert_includes args, "--cache=always"
-    assert_includes @machine.provider_config.extra_qemu_args, "-device"
-    assert_includes @machine.provider_config.extra_qemu_args, "vhost-user-fs-pci,chardev=char_virtiofs0,tag=virtiofs0"
+    assert_includes @machine.provider_config.virtiofs_qemu_args, "-device"
+    assert_includes @machine.provider_config.virtiofs_qemu_args, "vhost-user-fs-pci,chardev=char_virtiofs0,tag=virtiofs0"
 
-    memory_arg = @machine.provider_config.extra_qemu_args.find { |arg| arg.start_with?("memory-backend-") }
+    memory_arg = @machine.provider_config.virtiofs_qemu_args.find { |arg| arg.start_with?("memory-backend-") }
     if RUBY_PLATFORM.include?("linux")
       assert_equal "memory-backend-memfd,id=mem,size=256M,share=on", memory_arg
     elsif RUBY_PLATFORM.include?("darwin")
@@ -159,11 +160,11 @@ class VirtiofsTest < Minitest::Test
 
     2.times { adapter.prepare(@machine, folders, {}) }
 
-    args = @machine.provider_config.extra_qemu_args
+    args = @machine.provider_config.virtiofs_qemu_args
     assert_equal 1, args.count("memory-backend-memfd,id=mem,size=256M,share=on") if RUBY_PLATFORM.include?("linux")
     assert_equal 1, args.count { |arg| arg.start_with?("memory-backend-file,id=mem,") } if RUBY_PLATFORM.include?("darwin")
     assert_equal 1, args.count("vhost-user-fs-pci,chardev=char_virtiofs0,tag=virtiofs0")
-    assert_equal ["-boot", "order=c"], args.first(2)
+    assert_equal ["-boot", "order=c"], @machine.provider_config.extra_qemu_args
   end
 
   def test_mount_quotes_guest_path

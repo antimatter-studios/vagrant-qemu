@@ -59,7 +59,8 @@ config = OpenStruct.new(
   virtiofs_guest_uid: 1000,
   virtiofs_guest_gid: 1000,
   extra_virtiofsd_args: [],
-  extra_qemu_args: []
+  extra_qemu_args: [],
+  virtiofs_qemu_args: []
 )
 ui = Object.new
 def ui.info(_message); end
@@ -74,7 +75,7 @@ begin
     qemu_binary, "-machine", machine_type, "-cpu", "max", "-m", "256M",
     "-S", "-nodefaults", "-display", "none", "-monitor", "none",
     "-qmp", "unix:#{qmp_socket},server=on,wait=off",
-    *config.extra_qemu_args
+    *config.extra_qemu_args, *config.virtiofs_qemu_args
   ]
   qemu_pid = Process.spawn(*command, [:out, :err] => [qemu_log, "w"])
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
@@ -98,7 +99,7 @@ begin
     raise "QEMU did not stay stopped: #{status}" unless %w[paused prelaunch].include?(status.dig("return", "status"))
     socket.puts JSON.generate(execute: "quit")
   end
-  puts "QEMU connected to provider-started virtiofsd via #{config.extra_qemu_args.grep(/memory-backend/).first}"
+  puts "QEMU connected to provider-started virtiofsd via #{config.virtiofs_qemu_args.grep(/memory-backend/).first}"
 ensure
   if qemu_pid
     Process.kill("TERM", qemu_pid) rescue nil
