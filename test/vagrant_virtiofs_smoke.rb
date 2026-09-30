@@ -1,5 +1,6 @@
 #!/usr/bin/env ruby
 require "fileutils"
+require "shellwords"
 require "tmpdir"
 
 # Boot a real Vagrant guest and verify both directions of a VirtioFS share.
@@ -26,6 +27,7 @@ end
 
 box = ENV.fetch("VAGRANT_TEST_BOX", "cloud-image/debian-12")
 architecture = ENV.fetch("VAGRANT_TEST_ARCH", "amd64")
+virtiofsd_args = Shellwords.split(ENV.fetch("VAGRANT_TEST_VIRTIOFSD_ARGS", ""))
 raise "Unsupported architecture: #{architecture}" unless %w[amd64 arm64].include?(architecture)
 
 Dir.mktmpdir("vagrant-qemu-guest-smoke-") do |dir|
@@ -43,7 +45,7 @@ Dir.mktmpdir("vagrant-qemu-guest-smoke-") do |dir|
       config.vm.synced_folder #{share.inspect}, "/mnt/virtiofs-smoke", type: "virtiofs"
       config.vm.provider "qemu" do |qemu|
         qemu.memory = "1G"
-        qemu.extra_virtiofsd_args = ["--seccomp=none"]
+        qemu.extra_virtiofsd_args = #{virtiofsd_args.inspect}
         qemu.qemu_dir = #{ENV["VAGRANT_TEST_QEMU_DIR"].inspect} if #{!ENV["VAGRANT_TEST_QEMU_DIR"].nil?}
         if #{ENV["VAGRANT_TEST_FORCE_TCG"] == "1"}
           qemu.machine = #{(architecture == "amd64" ? "q35,accel=tcg" : "virt,highmem=on,accel=tcg").inspect}
@@ -61,12 +63,19 @@ Dir.mktmpdir("vagrant-qemu-guest-smoke-") do |dir|
     daemon_dirs = Dir.glob(File.join(dir, ".vagrant", "machines", "*", "qemu", "virtiofs"))
     raise "Expected one virtiofsd state directory, found #{daemon_dirs.length}" unless daemon_dirs.length == 1
     daemon_dir = daemon_dirs.first
+    daemon_pid = File.read(File.join(daemon_dir, "virtiofs0.pid")).to_i
     socket_path = File.read(File.join(daemon_dir, "virtiofs0.sock_path")).strip
-    raise "virtiofsd socket disappeared while guest was running" unless File.socket?(socket_path)
+    Process.kill(0, daemon_pid)
 
     run!("vagrant", "halt", chdir: dir)
     raise "vagrant halt left virtiofsd state behind" if File.exist?(daemon_dir)
     raise "vagrant halt left the virtiofsd socket behind" if File.exist?(socket_path)
+    begin
+      Process.kill(0, daemon_pid)
+      raise "vagrant halt left virtiofsd running (pid #{daemon_pid})"
+    rescue Errno::ESRCH
+      # The daemon exited as expected.
+    end
     puts "Vagrant guest mounted VirtioFS and read/wrote the host share"
   rescue StandardError
     print_virtiofsd_diagnostics(dir)
