@@ -10,7 +10,7 @@ def run!(*command, chdir:)
 end
 
 def print_virtiofsd_diagnostics(dir)
-  paths = Dir.glob(File.join(dir, ".vagrant", "machines", "*", "qemu", "*", "virtiofs", "*"))
+  paths = Dir.glob(File.join(dir, ".vagrant", "machines", "*", "qemu", "virtiofs", "*"))
   warn "VirtioFS diagnostics: #{paths.empty? ? 'no daemon files found' : paths.length.to_s + ' daemon files'}"
   paths.sort.each do |path|
     next unless File.file?(path)
@@ -57,7 +57,7 @@ Dir.mktmpdir("vagrant-qemu-guest-smoke-") do |dir|
     guest_command = "sudo sh -c 'findmnt -n -o FSTYPE /mnt/virtiofs-smoke | grep -qx virtiofs && grep -qx from-host /mnt/virtiofs-smoke/host.txt && printf from-guest > /mnt/virtiofs-smoke/guest.txt'"
     run!("vagrant", "ssh", "-c", guest_command, chdir: dir)
     raise "Guest write did not reach host" unless File.read(File.join(share, "guest.txt")) == "from-guest"
-    daemon_dirs = Dir.glob(File.join(dir, ".vagrant", "machines", "*", "qemu", "*", "virtiofs"))
+    daemon_dirs = Dir.glob(File.join(dir, ".vagrant", "machines", "*", "qemu", "virtiofs"))
     raise "Expected one virtiofsd state directory, found #{daemon_dirs.length}" unless daemon_dirs.length == 1
     daemon_dir = daemon_dirs.first
     socket_path = File.read(File.join(daemon_dir, "virtiofs0.sock_path")).strip
