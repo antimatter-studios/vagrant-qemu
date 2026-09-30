@@ -9,6 +9,21 @@ def run!(*command, chdir:)
   raise "#{command.first} failed" unless system(*command, chdir: chdir)
 end
 
+def print_virtiofsd_diagnostics(dir)
+  paths = Dir.glob(File.join(dir, ".vagrant", "machines", "*", "qemu", "*", "virtiofs", "*"))
+  warn "VirtioFS diagnostics: #{paths.empty? ? 'no daemon files found' : paths.length.to_s + ' daemon files'}"
+  paths.sort.each do |path|
+    next unless File.file?(path)
+
+    warn "--- #{path} ---"
+    warn File.read(path)
+    if path.end_with?(".pid")
+      pid = File.read(path).strip
+      system("ps", "-o", "pid,ppid,stat,command", "-p", pid)
+    end
+  end
+end
+
 box = ENV.fetch("VAGRANT_TEST_BOX", "cloud-image/debian-12")
 architecture = ENV.fetch("VAGRANT_TEST_ARCH", "amd64")
 raise "Unsupported architecture: #{architecture}" unless %w[amd64 arm64].include?(architecture)
@@ -43,6 +58,9 @@ Dir.mktmpdir("vagrant-qemu-guest-smoke-") do |dir|
     run!("vagrant", "ssh", "-c", guest_command, chdir: dir)
     raise "Guest write did not reach host" unless File.read(File.join(share, "guest.txt")) == "from-guest"
     puts "Vagrant guest mounted VirtioFS and read/wrote the host share"
+  rescue StandardError
+    print_virtiofsd_diagnostics(dir)
+    raise
   ensure
     system("vagrant", "destroy", "-f", chdir: dir)
   end
