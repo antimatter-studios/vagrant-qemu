@@ -36,7 +36,9 @@ The default box is `cloud-image/debian-12` for amd64. Set
 `VAGRANT_TEST_QEMU_DIR` if ARM firmware is outside QEMU's default directory.
 The script checks the guest mount, reads a host file, writes a file back,
 halts the VM to verify daemon cleanup, then destroys it. CI runs this stage
-on Linux with TCG for portable virtualization.
-The Ubuntu 24.04 runner's `virtiofsd` 1.10 exits with `SIGSYS` under Vagrant's
-default configuration, so CI sets `VAGRANT_TEST_VIRTIOFSD_ARGS=--seccomp=none`.
-The script uses the daemon defaults when this environment variable is unset.
+on Linux with TCG for portable virtualization and tests two Vagrant installs:
+the Ruby gem with the daemon's default seccomp filter, and the Linux AppImage
+with `VAGRANT_TEST_VIRTIOFSD_ARGS=--seccomp=none`. The AppImage injects
+`libunionpreload.so` into the daemon, which causes Ubuntu 24.04's `virtiofsd`
+1.10 to exit with `SIGSYS` under its default filter. The script uses the
+daemon defaults when this environment variable is unset.

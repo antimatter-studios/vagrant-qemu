@@ -36,15 +36,19 @@ jobs:
       - run: ruby test/qemu_virtiofs_smoke.rb
 
   linux-vagrant-guest:
-    name: Linux Vagrant guest mount
+    name: Linux Vagrant guest mount (${{ matrix.vagrant_distribution }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        vagrant_distribution: [rubygem, appimage]
     env:
       VAGRANT_HOME: /tmp/vagrant-qemu-ci-home
       VAGRANT_TEST_BOX: cloud-image/debian-12
       VAGRANT_TEST_ARCH: amd64
       VAGRANT_TEST_FORCE_TCG: '1'
-      VAGRANT_TEST_VIRTIOFSD_ARGS: '--seccomp=none'
+      VAGRANT_TEST_VIRTIOFSD_ARGS: ${{ matrix.vagrant_distribution == 'appimage' && '--seccomp=none' || '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
@@ -53,8 +57,12 @@ jobs:
       - name: Install QEMU and virtiofsd
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86 qemu-utils virtiofsd
-      - name: Install Vagrant
+          sudo apt-get install -y qemu-system-x86 qemu-utils virtiofsd libarchive-tools
+      - name: Install Vagrant RubyGem
+        if: matrix.vagrant_distribution == 'rubygem'
+        run: gem install vagrant -v 2.4.9 --no-document
+      - name: Install Vagrant AppImage
+        if: matrix.vagrant_distribution == 'appimage'
         run: |
           curl -fsSLo "$RUNNER_TEMP/vagrant.zip" https://releases.hashicorp.com/vagrant/2.4.9/vagrant_2.4.9_linux_amd64.zip
           mkdir -p "$RUNNER_TEMP/vagrant-bin"
