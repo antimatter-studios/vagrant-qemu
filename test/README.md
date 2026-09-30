@@ -37,3 +37,5 @@ The default box is `cloud-image/debian-12` for amd64. Set
 The script checks the guest mount, reads a host file, writes a file back,
 halts the VM to verify daemon cleanup, then destroys it. CI runs this stage
 on Linux with TCG for portable virtualization.
+It sets `extra_virtiofsd_args = ["--seccomp=none"]` while checking whether
+the Ubuntu 24.04 runner's daemon seccomp policy causes the startup failure.

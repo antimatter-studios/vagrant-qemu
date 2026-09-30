@@ -43,6 +43,7 @@ Dir.mktmpdir("vagrant-qemu-guest-smoke-") do |dir|
       config.vm.synced_folder #{share.inspect}, "/mnt/virtiofs-smoke", type: "virtiofs"
       config.vm.provider "qemu" do |qemu|
         qemu.memory = "1G"
+        qemu.extra_virtiofsd_args = ["--seccomp=none"]
         qemu.qemu_dir = #{ENV["VAGRANT_TEST_QEMU_DIR"].inspect} if #{!ENV["VAGRANT_TEST_QEMU_DIR"].nil?}
         if #{ENV["VAGRANT_TEST_FORCE_TCG"] == "1"}
           qemu.machine = #{(architecture == "amd64" ? "q35,accel=tcg" : "virt,highmem=on,accel=tcg").inspect}
