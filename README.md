@@ -84,10 +84,12 @@ end
 translation is used when the installed daemon supports it. Additional daemon
 arguments can be passed through `extra_virtiofsd_args` as an array.
 
-The Ubuntu 24.04 `virtiofsd` 1.10 package exits with `SIGSYS` under Vagrant on
-GitHub's hosted runner. For that daemon, the CI guest test uses
-`qe.extra_virtiofsd_args = ["--seccomp=none"]`. This disables the daemon's
-syscall filter; use it only when the host's daemon needs that workaround.
+Vagrant's Linux AppImage injects `libunionpreload.so` into child processes. On
+Ubuntu 24.04, its path interception triggers a syscall blocked by the packaged
+`virtiofsd` 1.10 seccomp filter, so the daemon exits with `SIGSYS`. When using
+that Vagrant distribution, set `qe.extra_virtiofsd_args = ["--seccomp=none"]`
+to disable the daemon's syscall filter. The GitHub Actions guest checks also
+run Vagrant from its Ruby gem, which uses the daemon's default seccomp filter.
 
 On Linux, QEMU uses a shared memfd memory backend for the vhost-user-fs device.
 On macOS, it uses a shared file backed memory object. The provider supports
