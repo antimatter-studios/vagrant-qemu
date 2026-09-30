@@ -20,6 +20,14 @@ jobs:
         with:
           ruby-version: '3.2'
       - run: ruby test/virtiofs_test.rb
+      - name: Check macOS QEMU VirtioFS capabilities
+        if: runner.os == 'macOS'
+        run: |
+          brew install qemu
+          device_help="$(qemu-system-x86_64 -device help)"
+          object_help="$(qemu-system-x86_64 -object help)"
+          grep -F 'vhost-user-fs-pci' <<< "$device_help"
+          grep -F 'memory-backend-file' <<< "$object_help"
 
   linux-qemu:
     name: Linux QEMU and virtiofsd handshake
