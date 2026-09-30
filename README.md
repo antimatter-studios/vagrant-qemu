@@ -40,6 +40,7 @@ Others:
 * SSH into VM
 * Provision the instances with any built-in Vagrant provisioner
 * Synced folder support via SMB
+* VirtioFS synced folders on macOS and Linux hosts
 * Basic operation: up, ssh, halt, destroy
 * Basic suport to forwarded ports, see [vagrant doc](https://www.vagrantup.com/docs/networking/forwarded_ports) for details
 * Support Cloud-init, see [vagrant doc](https://developer.hashicorp.com/vagrant/docs/cloud-init/usage) for details
@@ -112,8 +113,8 @@ This provider exposes a few provider-specific configuration options:
 * basic
   * `ssh_port` - The SSH port number used to access VM, default: `50022`
   * `arch` - The architecture of VM, default: `aarch64`
-  * `machine` - The machine type of VM, default: `virt,accel=hvf,highmem=off`
-  * `cpu` - The cpu model of VM, default: `cortex-a72`
+  * `machine` - The machine type of VM; default uses HVF on macOS and KVM with TCG fallback on Linux
+  * `cpu` - The CPU model of VM; defaults to `host` on macOS and `max` on Linux
   * `smp` - The smp setting (Simulate an SMP system with n CPUs) of VM, default: `2`
   * `memory` - The memory setting of VM, default: `4G`
   * `disk_resize` - The target disk size of the primary disk, requires resizing of filesystem inside of VM, default: `nil`.
@@ -132,10 +133,27 @@ This provider exposes a few provider-specific configuration options:
   * `debug_port` - The port number used to export serial port of the vm for debug, default is nil value. (nil means use unix socket, see "Debug" below for details)
   * `no_daemonize` - Disable the "daemonize" mode of QEMU, default is false. (see "Windows host" below as example)
   * `firmware_format` - The format of aarch64 firmware images (`edk2-aarch64-code.fd` and `edk2-arm-vars.fd`) loaded from `qemu_dir`, default: `raw`
+  * `virtiofsd_bin` - Path to `virtiofsd`, default: autodetected
+  * `virtiofs_guest_uid` / `virtiofs_guest_gid` - Guest UID/GID translated to the host user when supported, defaults: `1000`
+  * `extra_virtiofsd_args` - Additional arguments passed to `virtiofsd`, default: `[]`
   * `other_default` - The other default arguments used by this plugin, default: `%W(-parallel null -monitor none -display none -vga none)`
   * `extra_image_opts` - Options passed via `-o` to `qemu-img` when the base qcow2 images are created, default: `[]`
 
 ### Usage
+
+### VirtioFS shared folders
+
+VirtioFS shares a host folder with the guest using QEMU's vhost-user-fs device. Install QEMU with vhost-user-fs support and `virtiofsd` on the host. On Linux, install the `virtiofsd` package supplied by your distribution; on macOS, install a compatible `virtiofsd` build. The guest kernel must include VirtioFS support (`CONFIG_VIRTIO_FS`) and the guest needs the `virtiofs` filesystem mount helper or kernel support.
+
+Select the folder type explicitly:
+
+```ruby
+Vagrant.configure("2") do |config|
+  config.vm.synced_folder ".", "/vagrant", type: "virtiofs"
+end
+```
+
+The provider starts one `virtiofsd` process per folder and mounts each folder after the guest boots. On Linux hosts, QEMU uses a shared memfd backend; on macOS it uses a shared file-backed memory object. The provider detects the two common `virtiofsd` command-line formats (standalone `--shared-dir` and the older QEMU `-o source=` form). Set `virtiofsd_bin` if the daemon is installed outside the standard search paths.
 
 These can be set like typical provider-specific configuration:
 

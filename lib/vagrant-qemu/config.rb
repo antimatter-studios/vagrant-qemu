@@ -86,8 +86,16 @@ module VagrantPlugins
         @ssh_port = 50022 if @ssh_port == UNSET_VALUE
         @ssh_auto_correct = false if @ssh_auto_correct == UNSET_VALUE
         @arch = "aarch64" if @arch == UNSET_VALUE
-        @machine = "virt,accel=hvf,highmem=on" if @machine == UNSET_VALUE
-        @cpu = "host" if @cpu == UNSET_VALUE
+        if @machine == UNSET_VALUE
+          @machine = if RUBY_PLATFORM.include?("darwin")
+            "virt,accel=hvf,highmem=on"
+          else
+            # Try hardware acceleration when available, then fall back to TCG
+            # (for example when the default aarch64 guest runs on x86_64).
+            "virt,accel=kvm:tcg,highmem=on"
+          end
+        end
+        @cpu = (RUBY_PLATFORM.include?("darwin") ? "host" : "max") if @cpu == UNSET_VALUE
         @smp = "2" if @smp == UNSET_VALUE
         @memory = "4G" if @memory == UNSET_VALUE
         @net_device = "virtio-net-device" if @net_device == UNSET_VALUE
@@ -139,6 +147,7 @@ module VagrantPlugins
         /opt/homebrew/bin/virtiofsd
         /usr/local/bin/virtiofsd
         /usr/libexec/virtiofsd
+        /usr/lib/virtiofsd
         /usr/lib/qemu/virtiofsd
       ).freeze
 

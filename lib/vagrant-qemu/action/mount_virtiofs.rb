@@ -1,4 +1,5 @@
 require "log4r"
+require "shellwords"
 
 module VagrantPlugins
   module QEMU
@@ -23,8 +24,9 @@ module VagrantPlugins
               guestpath = data[:guestpath]
               tag = "virtiofs#{i}"
 
-              machine.communicate.sudo("mkdir -p #{guestpath}")
-              machine.communicate.sudo("mount -t virtiofs #{tag} #{guestpath}")
+              escaped_guestpath = Shellwords.escape(guestpath)
+              machine.communicate.sudo("mkdir -p #{escaped_guestpath}")
+              machine.communicate.sudo("mount -t virtiofs #{tag} #{escaped_guestpath}")
               machine.ui.info("Mounted virtiofs #{tag} at #{guestpath}")
             end
           end
