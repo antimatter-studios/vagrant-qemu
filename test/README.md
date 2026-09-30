@@ -11,8 +11,9 @@ the QEMU memory backend and device arguments, reload argument deduplication,
 and guest mount path quoting.
 They launch a small fake daemon, so no Vagrant or QEMU installation is needed.
 The GitHub Actions matrix runs them on both operating systems.
-The macOS job also installs Homebrew QEMU and checks that it exposes the
-VirtioFS PCI device and file-backed shared memory object used by the provider.
+The macOS job checks provider command construction. It does not boot a guest:
+the Homebrew QEMU build on the hosted runner does not expose the
+`vhost-user-fs-pci` device needed by this plugin.
 
 On Linux, install QEMU and virtiofsd, then check the real device handshake:
 

@@ -200,13 +200,14 @@ class VirtiofsTest < Minitest::Test
     File.write(daemon_path, <<~RUBY)
       #!/usr/bin/env ruby
       require "json"
+      require "socket"
       if ARGV.include?("--help")
         puts File.read(#{help_path.inspect})
         exit
       end
       socket = ARGV.find { |arg| arg.start_with?("--socket-path=") }.split("=", 2).last
       File.write(socket + ".args.json", JSON.generate(ARGV))
-      File.write(socket, "")
+      server = UNIXServer.new(socket)
       sleep 60
     RUBY
     FileUtils.chmod(0755, daemon_path)

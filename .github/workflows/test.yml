@@ -20,27 +20,6 @@ jobs:
         with:
           ruby-version: '3.2'
       - run: ruby test/virtiofs_test.rb
-      - name: Check macOS QEMU VirtioFS capabilities
-        if: runner.os == 'macOS'
-        run: |
-          brew install qemu
-          qemu-system-x86_64 --version
-          if ! device_help="$(qemu-system-x86_64 -device help 2>&1)"; then
-            printf '%s\n' "$device_help"
-            exit 1
-          fi
-          if ! grep -F 'vhost-user-fs-pci' <<< "$device_help"; then
-            echo 'Homebrew QEMU does not expose vhost-user-fs-pci'
-            exit 1
-          fi
-          if ! object_help="$(qemu-system-x86_64 -object help 2>&1)"; then
-            printf '%s\n' "$object_help"
-            exit 1
-          fi
-          if ! grep -F 'memory-backend-file' <<< "$object_help"; then
-            echo 'Homebrew QEMU does not expose memory-backend-file'
-            exit 1
-          fi
 
   linux-qemu:
     name: Linux QEMU and virtiofsd handshake
