@@ -1,0 +1,75 @@
+name: Test provider
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  provider-commands:
+    name: Provider commands (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - run: ruby test/virtiofs_test.rb
+
+  linux-qemu:
+    name: Linux QEMU and virtiofsd handshake
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - name: Install QEMU and virtiofsd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 virtiofsd
+      - run: ruby test/qemu_virtiofs_smoke.rb
+
+  linux-vagrant-guest:
+    name: Linux Vagrant guest mount (${{ matrix.vagrant_distribution }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        vagrant_distribution: [rubygem, appimage]
+    env:
+      VAGRANT_HOME: /tmp/vagrant-qemu-ci-home
+      VAGRANT_TEST_BOX: cloud-image/debian-12
+      VAGRANT_TEST_ARCH: amd64
+      VAGRANT_TEST_FORCE_TCG: '1'
+      VAGRANT_TEST_VIRTIOFSD_ARGS: ${{ matrix.vagrant_distribution == 'appimage' && '--seccomp=none' || '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - name: Install QEMU and virtiofsd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils virtiofsd libarchive-tools
+      - name: Install Vagrant RubyGem
+        if: matrix.vagrant_distribution == 'rubygem'
+        run: gem install vagrant -v 2.4.9 --no-document
+      - name: Install Vagrant AppImage
+        if: matrix.vagrant_distribution == 'appimage'
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/vagrant.zip" https://releases.hashicorp.com/vagrant/2.4.9/vagrant_2.4.9_linux_amd64.zip
+          mkdir -p "$RUNNER_TEMP/vagrant-bin"
+          unzip -q "$RUNNER_TEMP/vagrant.zip" -d "$RUNNER_TEMP/vagrant-bin"
+          echo "$RUNNER_TEMP/vagrant-bin" >> "$GITHUB_PATH"
+      - name: Install this plugin
+        run: |
+          gem build ./*.gemspec
+          vagrant plugin install "$(find "$PWD" -maxdepth 1 -name '*.gem' -print -quit)"
+      - run: ruby test/vagrant_virtiofs_smoke.rb
