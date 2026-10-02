@@ -19,7 +19,7 @@ jobs:
           ruby-version: '3.2'
 
       - name: Build gem
-        run: gem build vagrant-qemu-christhomas.gemspec
+        run: ruby script/build_gem.rb vagrant-qemu-christhomas
 
       - name: Configure RubyGems trusted publisher
         uses: rubygems/configure-rubygems-credentials@main

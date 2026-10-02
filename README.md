@@ -54,10 +54,10 @@ Make sure QEMU is installed, if not:
 brew install qemu
 ```
 
-Install plugin from [GitHub Releases](https://github.com/christhomas/vagrant-qemu/releases):
+Install plugin from [GitHub Releases](https://github.com/antimatter-studios/vagrant-qemu/releases):
 
 ```
-vagrant plugin install https://github.com/christhomas/vagrant-qemu/releases/download/<version>/vagrant-qemu-<version>.gem
+vagrant plugin install https://github.com/antimatter-studios/vagrant-qemu/releases/download/<version>/vagrant-qemu-christhomas-<version>.gem
 ```
 
 Prepare a `Vagrantfile`, see [Example](#example), and start:
@@ -396,7 +396,7 @@ Ensure your development environment has the necessary tools installed, such as:
 
 1. Clone this repository:
     ```sh
-    git clone https://github.com/christhomas/vagrant-qemu.git
+    git clone https://github.com/antimatter-studios/vagrant-qemu.git
     cd vagrant-qemu
     ```
 

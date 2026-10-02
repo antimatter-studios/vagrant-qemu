@@ -2,13 +2,13 @@ $:.unshift File.expand_path("../lib", __FILE__)
 require "vagrant-qemu/version"
 
 Gem::Specification.new do |s|
-  s.name          = "vagrant-qemu-christhomas"
+  s.name          = ENV.fetch("VAGRANT_QEMU_GEM_NAME", "vagrant-qemu")
   s.version       = VagrantPlugins::QEMU::VERSION
   s.platform      = Gem::Platform::RUBY
   s.license       = "MIT"
   s.authors       = "ppggff"
   s.email         = "pgf00a@gmail.com"
-  s.homepage      = "https://github.com/christhomas/vagrant-qemu"
+  s.homepage      = "https://github.com/antimatter-studios/vagrant-qemu"
   s.summary       = "Enables Vagrant to manage machines with QEMU."
   s.description   = "Enables Vagrant to manage machines with QEMU."
 

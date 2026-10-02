@@ -70,6 +70,6 @@ jobs:
           echo "$RUNNER_TEMP/vagrant-bin" >> "$GITHUB_PATH"
       - name: Install this plugin
         run: |
-          gem build ./*.gemspec
+          ruby script/build_gem.rb vagrant-qemu-christhomas
           vagrant plugin install "$(find "$PWD" -maxdepth 1 -name '*.gem' -print -quit)"
       - run: ruby test/vagrant_virtiofs_smoke.rb
