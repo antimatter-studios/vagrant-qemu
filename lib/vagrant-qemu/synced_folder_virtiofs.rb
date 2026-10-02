@@ -30,8 +30,6 @@ module VagrantPlugins
         virtiofs_dir = machine.data_dir.join("virtiofs")
         FileUtils.mkdir_p(virtiofs_dir)
         socket_dir = Dir.tmpdir
-
-
         virtiofsd = machine.provider_config.virtiofsd_bin
         memory = machine.provider_config.memory
 
@@ -101,15 +99,22 @@ module VagrantPlugins
           # Keep the daemon outside Vagrant's process group so it survives
           # after `vagrant up` exits and continues serving mounted folders.
           pid = spawn(*virtiofsd_args, in: File::NULL, [:out, :err] => [log_file, "w"], pgroup: true)
-          Process.detach(pid)
+          waiter = Process.detach(pid)
 
-          # Wait for socket to appear
+          # The path can appear before the daemon starts listening.
           30.times do
-            break if File.exist?(socket_path)
+            break if File.socket?(socket_path)
             sleep 0.1
           end
 
-          unless File.exist?(socket_path)
+          sleep 0.2 if File.socket?(socket_path)
+
+          alive = process_alive?(pid)
+          unless File.socket?(socket_path) && alive
+            status = waiter.value unless alive
+            log = File.read(log_file)
+            machine.ui.error("virtiofsd pid #{pid} exited with #{status.inspect}") if status
+            machine.ui.error("virtiofsd log (#{log_file}):\n#{log.empty? ? '(empty)' : log}")
             Process.kill("TERM", pid) rescue nil
             raise Errors::VirtiofsdStartFailed,
               hostpath: hostpath,
@@ -127,8 +132,7 @@ module VagrantPlugins
           )
         end
 
-        # Inject QEMU args so StartInstance picks them up
-        machine.provider_config.extra_qemu_args += extra_args
+        machine.provider_config.virtiofs_qemu_args = extra_args
       end
 
       def enable(machine, folders, opts)
@@ -159,6 +163,13 @@ module VagrantPlugins
       end
 
       private
+
+      def process_alive?(pid)
+        Process.kill(0, pid)
+        true
+      rescue Errno::ESRCH
+        false
+      end
 
       def cleanup_virtiofsd(pid_file, socket_path)
         if File.exist?(pid_file)

@@ -112,16 +112,16 @@ This provider exposes a few provider-specific configuration options:
 
 * basic
   * `ssh_port` - The SSH port number used to access VM, default: `50022`
-  * `arch` - The architecture of VM, default: `aarch64`
-  * `machine` - The machine type of VM; default uses HVF on macOS and KVM with TCG fallback on Linux
-  * `cpu` - The CPU model of VM; defaults to `host` on macOS and `max` on Linux
+  * `arch` - The architecture of VM, default: the host architecture (`aarch64` or `x86_64`)
+  * `machine` - The machine type of VM; defaults to HVF on macOS or KVM on Linux for native guests, and TCG for cross-architecture guests
+  * `cpu` - The CPU model of VM, default: `host` for native guests and `max` for cross-architecture guests
   * `smp` - The smp setting (Simulate an SMP system with n CPUs) of VM, default: `2`
   * `memory` - The memory setting of VM, default: `4G`
   * `disk_resize` - The target disk size of the primary disk, requires resizing of filesystem inside of VM, default: `nil`.
 * debug/expert
   * `ssh_host` - The SSH IP used to access VM, default: `127.0.0.1`
   * `ssh_auto_correct` - Auto correct port collisions for ssh port, default: `false`
-  * `net_device` - The network device, default: `virtio-net-device`
+  * `net_device` - The network device, default: `virtio-net-device` for aarch64 or `virtio-net-pci` for x86_64
   * `drive_interface` - The interface type for the main drive, default `virtio`
   * `image_path` - The path (or array of paths) to qcow2 image for box-less VM, default is nil value
   * `qemu_bin` - Path to an alternative QEMU binary, default: autodetected
@@ -154,6 +154,8 @@ end
 ```
 
 The provider starts one `virtiofsd` process per folder and mounts each folder after the guest boots. On Linux hosts, QEMU uses a shared memfd backend; on macOS it uses a shared file-backed memory object. The provider detects the two common `virtiofsd` command-line formats (standalone `--shared-dir` and the older QEMU `-o source=` form). Set `virtiofsd_bin` if the daemon is installed outside the standard search paths.
+
+On Ubuntu 24.04, Vagrant's Linux AppImage injects `libunionpreload.so` into `virtiofsd`. This can trigger `SIGSYS` under the daemon's default seccomp filter. If you use that Vagrant distribution and encounter this failure, set `qe.extra_virtiofsd_args = ["--seccomp=none"]` in the provider configuration. This disables the daemon's syscall filter; the RubyGem Vagrant distribution works with the default filter in our hosted tests.
 
 These can be set like typical provider-specific configuration:
 

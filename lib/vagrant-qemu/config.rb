@@ -1,4 +1,5 @@
 require "json"
+require "rbconfig"
 require "vagrant"
 
 module VagrantPlugins
@@ -21,6 +22,7 @@ module VagrantPlugins
       attr_accessor :virtiofs_guest_uid
       attr_accessor :virtiofs_guest_gid
       attr_accessor :extra_virtiofsd_args
+      attr_accessor :virtiofs_qemu_args
       attr_accessor :disk_resize
       attr_accessor :extra_qemu_args
       attr_accessor :extra_netdev_args
@@ -53,6 +55,7 @@ module VagrantPlugins
         @virtiofs_guest_uid = UNSET_VALUE
         @virtiofs_guest_gid = UNSET_VALUE
         @extra_virtiofsd_args = UNSET_VALUE
+        @virtiofs_qemu_args = []
         @disk_resize = UNSET_VALUE
         @extra_qemu_args = UNSET_VALUE
         @extra_netdev_args = UNSET_VALUE
@@ -85,20 +88,15 @@ module VagrantPlugins
         @ssh_host = "127.0.0.1" if @ssh_host == UNSET_VALUE
         @ssh_port = 50022 if @ssh_port == UNSET_VALUE
         @ssh_auto_correct = false if @ssh_auto_correct == UNSET_VALUE
-        @arch = "aarch64" if @arch == UNSET_VALUE
-        if @machine == UNSET_VALUE
-          @machine = if RUBY_PLATFORM.include?("darwin")
-            "virt,accel=hvf,highmem=on"
-          else
-            # Try hardware acceleration when available, then fall back to TCG
-            # (for example when the default aarch64 guest runs on x86_64).
-            "virt,accel=kvm:tcg,highmem=on"
-          end
-        end
-        @cpu = (RUBY_PLATFORM.include?("darwin") ? "host" : "max") if @cpu == UNSET_VALUE
+        @arch = host_arch if @arch == UNSET_VALUE
+        native = @arch == host_arch
+        base_machine = @arch == "aarch64" ? "virt,highmem=on" : "q35"
+        accelerator = native ? (RUBY_PLATFORM.include?("darwin") ? "hvf" : "kvm") : "tcg"
+        @machine = "#{base_machine},accel=#{accelerator}" if @machine == UNSET_VALUE
+        @cpu = native ? "host" : "max" if @cpu == UNSET_VALUE
         @smp = "2" if @smp == UNSET_VALUE
         @memory = "4G" if @memory == UNSET_VALUE
-        @net_device = "virtio-net-device" if @net_device == UNSET_VALUE
+        @net_device = @arch == "aarch64" ? "virtio-net-device" : "virtio-net-pci" if @net_device == UNSET_VALUE
         @drive_interface = "virtio" if @drive_interface == UNSET_VALUE
         @image_path = nil if @image_path == UNSET_VALUE
         @qemu_bin = resolve_binary(gem_config["qemu_bin"], "qemu") if @qemu_bin == UNSET_VALUE
@@ -133,6 +131,10 @@ module VagrantPlugins
       end
 
       private
+
+      def host_arch
+        RbConfig::CONFIG["host_cpu"] =~ /arm|aarch64/ ? "aarch64" : "x86_64"
+      end
 
       def load_gem_config
         config_path = File.expand_path(GEM_CONFIG_FILE)

@@ -23,7 +23,7 @@ module VagrantPlugins
             :net_device => env[:machine].provider_config.net_device,
             :drive_interface => env[:machine].provider_config.drive_interface,
             :qemu_bin => env[:machine].provider_config.qemu_bin,
-            :extra_qemu_args => env[:machine].provider_config.extra_qemu_args,
+            :extra_qemu_args => env[:machine].provider_config.extra_qemu_args + env[:machine].provider_config.virtiofs_qemu_args,
             :extra_netdev_args => env[:machine].provider_config.extra_netdev_args,
             :extra_drive_args => env[:machine].provider_config.extra_drive_args,
             :ports => fwPorts,

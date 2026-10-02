@@ -61,7 +61,7 @@ module VagrantPlugins
             @logger.info("Found box image path: #{img_info}")
           end
 
-          if env[:machine].provider_config.firmware_format
+          if env[:machine].provider_config.arch == "aarch64" && env[:machine].provider_config.firmware_format
             qemu_dir = Pathname.new(env[:machine].provider_config.qemu_dir)
             if !qemu_dir.directory?
               @logger.error("Invalid qemu dir: #{qemu_dir}")

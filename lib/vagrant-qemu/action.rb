@@ -123,6 +123,7 @@ module VagrantPlugins
             b1.use EnvSet, port_collision_repair: true
             b1.use PrepareForwardedPortCollisionParams
             b1.use HandleForwardedPortCollisions
+            b1.use ResetVirtioFSArgs
             b1.use SyncedFolderCleanup
             b1.use SyncedFolders
             b1.use WarnNetworks
@@ -179,6 +180,7 @@ module VagrantPlugins
       autoload :WarnNetworks, action_root.join("warn_networks")
       autoload :PrepareForwardedPortCollisionParams, action_root.join("prepare_forwarded_port_collision_params")
       autoload :MountVirtioFS, action_root.join("mount_virtiofs")
+      autoload :ResetVirtioFSArgs, action_root.join("reset_virtiofs_args")
     end
   end
 end
