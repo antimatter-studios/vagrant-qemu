@@ -19,6 +19,7 @@ vendor/**/*
 .vagrant
 Vagrantfile
 !example_box/Vagrantfile
+!examples/virtiofs/Vagrantfile
 
 # RVM files for gemset/ruby setting
 .ruby-*

@@ -1,0 +1,27 @@
+require "rbconfig"
+require "shellwords"
+
+architecture = ENV.fetch("VAGRANT_TEST_ARCH") do
+  %w[arm64 aarch64].include?(RbConfig::CONFIG.fetch("host_cpu")) ? "arm64" : "amd64"
+end
+raise "Unsupported architecture: #{architecture}" unless %w[amd64 arm64].include?(architecture)
+
+Vagrant.configure("2") do |config|
+  config.vm.box = ENV.fetch("VAGRANT_TEST_BOX", "cloud-image/debian-12")
+  config.vm.box_architecture = architecture
+  config.vm.box_check_update = false
+  config.vagrant.plugins = []
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.synced_folder "share", "/mnt/virtiofs-smoke", type: "virtiofs"
+
+  config.vm.provider "qemu" do |qemu|
+    qemu.memory = "1G"
+    qemu.extra_virtiofsd_args = Shellwords.split(ENV.fetch("VAGRANT_TEST_VIRTIOFSD_ARGS", ""))
+    qemu.qemu_dir = ENV["VAGRANT_TEST_QEMU_DIR"] if ENV["VAGRANT_TEST_QEMU_DIR"]
+
+    if ENV["VAGRANT_TEST_FORCE_TCG"] == "1"
+      qemu.machine = architecture == "amd64" ? "q35,accel=tcg" : "virt,highmem=on,accel=tcg"
+      qemu.cpu = "max"
+    end
+  end
+end
