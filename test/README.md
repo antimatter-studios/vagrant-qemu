@@ -25,7 +25,8 @@ This starts virtiofsd through the provider's folder adapter and starts QEMU
 with the resulting arguments. It checks QEMU's monitor response. It does not
 boot a guest or verify an in-guest mount.
 
-With Vagrant and this plugin installed, run a full guest check:
+With Vagrant and this plugin installed, run a full guest check using the
+checked-in `examples/virtiofs/Vagrantfile`:
 
 ```sh
 ruby test/vagrant_virtiofs_smoke.rb
@@ -42,3 +43,9 @@ with `VAGRANT_TEST_VIRTIOFSD_ARGS=--seccomp=none`. The AppImage injects
 `libunionpreload.so` into the daemon, which causes Ubuntu 24.04's `virtiofsd`
 1.10 to exit with `SIGSYS` under its default filter. The script uses the
 daemon defaults when this environment variable is unset.
+
+The macOS Apple Silicon job installs this tap's macOS `virtiofsd` port and QEMU
+build with `vhost-user-fs-pci` support. It runs the same guest check under TCG
+because GitHub's hosted macOS runner does not expose nested hardware
+virtualization. Both guest jobs upload a log with tool versions, the `vagrant up`
+output, the guest mount, file transfer, and cleanup result.

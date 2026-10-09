@@ -72,4 +72,61 @@ jobs:
         run: |
           ruby script/build_gem.rb vagrant-qemu-christhomas
           vagrant plugin install "$(find "$PWD" -maxdepth 1 -name '*.gem' -print -quit)"
-      - run: ruby test/vagrant_virtiofs_smoke.rb
+      - name: Boot sample guest and record evidence
+        run: |
+          set -o pipefail
+          {
+            git rev-parse HEAD
+            uname -a
+            vagrant --version
+            qemu-system-x86_64 --version
+            virtiofsd --version
+            ruby test/vagrant_virtiofs_smoke.rb
+          } 2>&1 | tee "$RUNNER_TEMP/virtiofs-evidence.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: virtiofs-linux-${{ matrix.vagrant_distribution }}
+          path: ${{ runner.temp }}/virtiofs-evidence.log
+
+  macos-vagrant-guest:
+    name: macOS Apple Silicon Vagrant guest mount
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      VAGRANT_HOME: /tmp/vagrant-qemu-ci-home
+      VAGRANT_TEST_BOX: cloud-image/debian-12
+      VAGRANT_TEST_ARCH: arm64
+      VAGRANT_TEST_FORCE_TCG: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+      - name: Install macOS VirtioFS daemon and QEMU
+        run: |
+          brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd
+          echo "VAGRANT_TEST_QEMU_DIR=$(brew --prefix antimatter-studios/tap/qemu)/share/qemu" >> "$GITHUB_ENV"
+          qemu-system-aarch64 -device help | grep vhost-user-fs
+      - name: Install Vagrant and this plugin
+        run: |
+          gem install vagrant -v 2.4.9 --no-document
+          ruby script/build_gem.rb vagrant-qemu-christhomas
+          vagrant plugin install "$(find "$PWD" -maxdepth 1 -name '*.gem' -print -quit)"
+      - name: Boot sample guest and record evidence
+        run: |
+          set -o pipefail
+          {
+            git rev-parse HEAD
+            sw_vers
+            uname -a
+            vagrant --version
+            qemu-system-aarch64 --version
+            virtiofsd --version
+            ruby test/vagrant_virtiofs_smoke.rb
+          } 2>&1 | tee "$RUNNER_TEMP/virtiofs-evidence.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: virtiofs-macos-arm64
+          path: ${{ runner.temp }}/virtiofs-evidence.log
