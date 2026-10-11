@@ -9,6 +9,12 @@ module VagrantPlugins
   module QEMU
     class SyncedFolderVirtioFS < Vagrant.plugin("2", :synced_folder)
 
+      # The daemon and QEMU run inside WSL2, so shares do not need Windows
+      # DrvFs paths. Vagrant checks this capability during VM validation.
+      def self.wsl_allow_non_drvfs?
+        true
+      end
+
       def usable?(machine, raise_error = false)
         return false unless machine.provider_name == :qemu
 

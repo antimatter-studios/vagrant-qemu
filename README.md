@@ -81,7 +81,9 @@ brew install antimatter-studios/tap/qemu antimatter-studios/tap/virtiofsd
 ```
 
 CI tests this combination with TCG. Linux and Windows WSL2 use the Ubuntu
-`virtiofsd` package. Use `type: "virtiofs"` explicitly, or restrict
+`virtiofsd` package. In WSL2 both QEMU and the daemon run inside Linux, so
+shares can live on the native Linux filesystem; Windows DrvFs paths are
+not required. Use `type: "virtiofs"` explicitly, or restrict
 `config.vm.allowed_synced_folder_types` to `[:virtiofs]`; its priority is
 below rsync and NFS so installing the daemon does not override those types.
 
