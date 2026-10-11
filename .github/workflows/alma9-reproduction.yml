@@ -1,0 +1,86 @@
+name: AlmaLinux 9 CPU reproduction
+on:
+  push:
+    branches: [codex/alma9-reproduction]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    name: AlmaLinux 9 with ${{ matrix.cpu }} on Apple Silicon
+    runs-on: macos-15
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [qemu64, max]
+    env:
+      VAGRANT_HOME: /tmp/alma-home
+      CPU_MODEL: ${{ matrix.cpu }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83
+        with:
+          ruby-version: '3.3'
+      - name: Install QEMU, Vagrant and this upstream-based plugin
+        run: |
+          brew install qemu
+          gem install vagrant --no-document
+          gem build vagrant-qemu.gemspec
+          vagrant plugin install "$(find "$PWD" -maxdepth 1 -name 'vagrant-qemu-*.gem' -print -quit)"
+          git rev-parse HEAD
+          uname -m
+          qemu-system-x86_64 --version
+          vagrant --version
+      - name: Capture boot outcome and serial output
+        working-directory: examples/issue-67
+        shell: bash
+        run: |
+          python3 -u capture_serial.py > serial.log 2>&1 &
+          serial_capture_pid=$!
+          trap 'kill "$serial_capture_pid" 2>/dev/null || true' EXIT
+          set +e
+          vagrant up --provider=qemu --no-provision --debug 2>&1 | tee vagrant.log
+          boot_result=${PIPESTATUS[0]}
+          set -e
+          echo "$boot_result" > boot-exit-code.txt
+          echo "CPU $CPU_MODEL: vagrant up exit code $boot_result" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$boot_result" = 0 ]; then
+            vagrant ssh -c 'uname -m && cat /etc/almalinux-release' 2>&1 | tee guest.log
+          fi
+          cat serial.log
+      - name: Stop only the QEMU process owned by this test and remove the VM
+        if: always()
+        working-directory: examples/issue-67
+        run: |
+          # Cleanup externally because this reproduction uses upstream master,
+          # whose monitor wait can block after an unresponsive guest boot.
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import signal
+          import subprocess
+          import time
+          for pidfile in pathlib.Path(os.environ['VAGRANT_HOME']).glob('tmp/vagrant-qemu/*/qemu.pid'):
+              try:
+                  pid = int(pidfile.read_text().strip())
+                  if pid <= 1:
+                      continue
+                  command = subprocess.check_output(['ps', '-ww', '-p', str(pid), '-o', 'command='], text=True)
+                  if str(pidfile) in command and 'qemu-system-x86_64' in command:
+                      os.kill(pid, signal.SIGTERM)
+              except (OSError, ValueError, subprocess.CalledProcessError):
+                  pass
+          time.sleep(3)
+          try:
+              subprocess.run(['vagrant', 'destroy', '-f'], timeout=30, check=False)
+          except subprocess.TimeoutExpired:
+              print('Vagrant destroy timed out; runner disposal will remove the test files')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: alma9-${{ matrix.cpu }}
+          path: |
+            examples/issue-67/*.log
+            examples/issue-67/boot-exit-code.txt
