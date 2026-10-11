@@ -36,6 +36,7 @@ describe "advanced networking over socket multicast (no root)", :requires_qemu d
     # assignment or cross-VM traffic broke.
     File.write(@work_dir.join("Vagrantfile"), <<~RUBY)
       Vagrant.configure("2") do |config|
+        #{snapd_fast_stop}
         config.vm.box = "#{test_box_cloudinit}"
         config.vm.box_check_update = false
         config.vm.synced_folder ".", "/vagrant", disabled: true
@@ -57,6 +58,37 @@ describe "advanced networking over socket multicast (no root)", :requires_qemu d
     expect(ssh[:stdout]).to include("192.168.105.40")
   end
 
+  it "a MAC that YAML 1.1 reads as an integer reaches netplan as a string" do
+    # All octets decimal and below 60: an unquoted MAC in network-config is a
+    # base-60 integer to cloud-init, and netplan then rejects the rendered
+    # config. Generated MACs hit this ~1.3% of the time, so pin one.
+    mac = "52:54:00:26:47:05"
+    File.write(@work_dir.join("Vagrantfile"), <<~RUBY)
+      Vagrant.configure("2") do |config|
+        #{snapd_fast_stop}
+        config.vm.box = "#{test_box_cloudinit}"
+        config.vm.box_check_update = false
+        config.vm.synced_folder ".", "/vagrant", disabled: true
+        config.vm.network "private_network", ip: "192.168.105.42", mac: "#{mac}"
+        config.vm.provider "qemu" do |qe|
+          qe.memory = "2G"
+          qe.advanced_network = true
+          qe.net_mode = :socket
+          qe.mcast_addr = "#{MCAST}"
+        end
+      end
+    RUBY
+
+    result = vagrant_up(@work_dir, timeout: 600)
+    expect(result[:exit_code]).to eq 0
+
+    ssh = vagrant_ssh(@work_dir, command: "ip addr show")
+    expect(ssh[:stdout]).to include("192.168.105.42")
+
+    ssh = vagrant_ssh(@work_dir, command: "sudo netplan generate")
+    expect(ssh[:exit_code]).to eq(0), ssh[:stderr]
+  end
+
   it "two VMs communicate over the socket multicast private network" do
     # QEMU's socket-multicast netdev binds its UDP socket to the multicast
     # group address (net/socket.c net_socket_mcast_create). Darwin's socket
@@ -73,6 +105,7 @@ describe "advanced networking over socket multicast (no root)", :requires_qemu d
 
     File.write(@work_dir.join("Vagrantfile"), <<~RUBY)
       Vagrant.configure("2") do |config|
+        #{snapd_fast_stop}
         config.vm.define "vm1" do |c|
           c.vm.box = "#{test_box_cloudinit}"
           c.vm.box_check_update = false
@@ -135,8 +168,8 @@ describe "advanced networking over socket listen/connect (no root)", :requires_q
   it "two VMs communicate over a user-defined listen/connect socket" do
     File.write(@work_dir.join("Vagrantfile"), <<~RUBY)
       Vagrant.configure("2") do |config|
-        # The user picks the roles: vm1 listens, vm2 connects. vm1 is defined
-        # first so it boots first and is listening before vm2 dials in.
+        #{snapd_fast_stop}
+        # The user picks the roles: vm1 listens, vm2 connects.
         config.vm.define "vm1" do |c|
           c.vm.box = "#{test_box_cloudinit}"
           c.vm.box_check_update = false
@@ -167,7 +200,10 @@ describe "advanced networking over socket listen/connect (no root)", :requires_q
       end
     RUBY
 
-    vagrant_up(@work_dir, timeout: 600)
+    # The provider boots machines in parallel; --no-parallel follows the
+    # definition order, so vm1 is listening before vm2 connects.
+    result = run_vagrant_cmd("up", "--provider=qemu", "--no-parallel", cwd: @work_dir, timeout: 600)
+    expect(result[:exit_code]).to eq(0), result[:stderr]
 
     # vm1 (listener) pings vm2 (connector) over the link. Assert on the ping
     # output itself, not just an exit code that can pass vacuously.

@@ -347,7 +347,7 @@ For VM-to-VM networking on macOS without sudo, use `:socket` with a `listen`/`co
 ```ruby
 Vagrant.configure("2") do |config|
   PORT = 12399
-  # vm1 listens; define it first so it is up before vm2 connects.
+  # vm1 listens, vm2 connects to it.
   config.vm.define "vm1" do |c|
     c.vm.box = "perk/ubuntu-2204-arm64"  # an aarch64 cloud-init box
     c.vm.network "private_network", ip: "192.168.105.51"
@@ -371,6 +371,8 @@ Vagrant.configure("2") do |config|
   end
 end
 ```
+
+Bring it up with `vagrant up --no-parallel`. The provider boots machines in parallel by default, so a plain `vagrant up` can start vm2 before vm1 is listening, and the link never comes up.
 
 A single VM with a static IP (vmnet is the default backend on macOS when `net_mode` is `:auto`):
 
@@ -433,7 +435,7 @@ Notes:
 * The Linux `:tap` backend expects a pre-created tap device attached to a bridge, e.g.:
   `sudo ip tuntap add tap0 mode tap && sudo ip link set tap0 master br0 && sudo ip link set tap0 up`
 * `socket_opts = "mcast=..."` gives N-way VM-to-VM on Linux/Windows, but does **not** work on macOS: QEMU binds the netdev socket to the multicast group address, which the Darwin socket stack refuses to send from (`EADDRNOTAVAIL`). On macOS use a `listen`/`connect` pair (no root) or vmnet (sudo).
-* `socket_opts = "listen=..."` / `"connect=..."` is a point-to-point QEMU TCP link and connects **exactly two** VMs (QEMU's listening socket accepts a single connection — it is not a hub). You choose which VM listens and which connects. The listener must be running before the connector starts, so define the listener first and bring the environment up together (`vagrant up`); starting a connector alone, or reloading the listener, drops the link.
+* `socket_opts = "listen=..."` / `"connect=..."` is a point-to-point QEMU TCP link and connects **exactly two** VMs (QEMU's listening socket accepts a single connection — it is not a hub). You choose which VM listens and which connects. The listener must be running before the connector starts, so define the listener first and bring the environment up with `vagrant up --no-parallel` (a plain `vagrant up` boots both in parallel and may start the connector first: both VMs come up with their IPs, but no traffic passes). Starting a connector alone, or reloading the listener, drops the link.
 
 Platform support:
 
@@ -526,28 +528,44 @@ vagrant plugin list | grep vagrant-qemu
 
 > This command will list all installed plugins, and you should see the vagrant-qemu plugin with the locally built version.
 
-### Running Tests
+### Testing
+
+Tests are RSpec, in three layers. GitHub Actions runs all of them on every pull request (`.github/workflows/ci.yml`); a new push to a pull request cancels its older run, and changes that only touch `*.md` files are not tested.
+
+| Layer | What | Where CI runs it |
+|---|---|---|
+| Unit (`spec/unit`) | Plugin code, no QEMU | Ubuntu, macOS, Windows |
+| Acceptance (`spec/acceptance`) | Vagrant actions against a mock `qemu` (bash scripts) | Ubuntu, macOS |
+| Guest smoke (`examples/ci-smoke`) | Boots a Debian guest: up, ssh, status, halt, destroy | Ubuntu, macOS, Windows WSL2 |
+| e2e (`spec/e2e`) | Real VMs: disks, forwarded ports, provision, reload, package, networking | Ubuntu with KVM; vmnet and socket_vmnet specs on macOS |
+
+CI uses the latest Vagrant release and prints the Ruby and Vagrant versions in each job. Hosted macOS runners have no HVF, so CI runs macOS guests with TCG; the HVF path is only tested locally.
+
+Run them locally:
 
 ```sh
-# Unit tests (fast, no QEMU needed)
+# Unit and acceptance (fast, no real VM)
 bundle exec rake spec:unit
-
-# Acceptance tests (mock QEMU, no real VM)
 bundle exec rake spec:acceptance
 
-# End-to-end tests (requires QEMU and a box image). e2e exercises the
-# INSTALLED plugin — rebuild and reinstall first (the suite fails fast on
-# a version mismatch):
+# e2e exercises the INSTALLED plugin: rebuild and reinstall first (the
+# suite fails fast on a version mismatch)
 bundle exec rake build
 vagrant plugin install ./pkg/vagrant-qemu-<version>.gem
 TEST_QEMU=1 bundle exec rake spec:e2e
 
-# End-to-end with vmnet (requires sudo + macOS; needs an aarch64 cloud-init box)
-TEST_QEMU=1 TEST_VMNET=1 TEST_BOX_CLOUDINIT=perk/ubuntu-2204-arm64 sudo -E bundle exec rake spec:e2e
-
-# All tests
-bundle exec rake spec
+# vmnet (macOS, needs sudo) and socket_vmnet (macOS, needs the daemon:
+# brew install socket_vmnet && sudo brew services start socket_vmnet)
+TEST_VMNET=1 sudo -E bundle exec rspec spec/e2e/advanced_network_spec.rb
+TEST_SOCKET_VMNET=1 bundle exec rspec spec/e2e/socket_vmnet_spec.rb
 ```
+
+The e2e boxes default to Apple Silicon (aarch64) boxes; on another host set `TEST_BOX` and `TEST_BOX_CLOUDINIT` to boxes of the host architecture (CI uses `cloud-image/ubuntu-22.04` for both).
+
+Adding tests:
+
+* A new e2e example in `spec/e2e` tagged `:requires_qemu` runs in CI's Ubuntu e2e job without workflow changes.
+* A feature that needs extra host setup (a daemon, a tool such as `virtiofsd`, root) gets its own tag, an environment switch in `spec/spec_helper.rb` next to `TEST_VMNET`, and a workflow step that installs the dependency and sets the switch.
 
 ## Known issue / Troubleshooting
 

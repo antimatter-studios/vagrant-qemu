@@ -44,6 +44,9 @@ describe VagrantPlugins::QEMU::Network::SocketVmnet do
       client = @dir.join("client").to_s
       FileUtils.touch(client)
       File.chmod(0o755, client)
+      # chmod does not make a file executable on Windows.
+      allow(File).to receive(:executable?).and_call_original
+      allow(File).to receive(:executable?).with(client).and_return(true)
       { socket_vmnet_socket: sock, socket_vmnet_client: client }.merge(overrides)
     end
 

@@ -9,10 +9,11 @@ require "bundler"
 #                     Default: "ppggff/centos-7-aarch64-2009-4K"
 #
 # TEST_BOX_CLOUDINIT - Box for advanced network tests.
-#                      Must be an aarch64 box (x86_64 images never boot under
-#                      qemu-system-aarch64) and support cloud-init for static
-#                      IP configuration.
-#                      Default: "perk/ubuntu-2204-arm64"
+#                      Must match the host architecture (the provider picks
+#                      qemu-system-aarch64 or -x86_64 from the host) and
+#                      support cloud-init for static IP configuration.
+#                      Default: "perk/ubuntu-2204-arm64" (Apple Silicon).
+#                      CI uses "cloud-image/ubuntu-22.04" for both boxes.
 #
 # IMPORTANT: e2e tests run vagrant via Bundler.with_unbundled_env, which means
 # they exercise the INSTALLED `vagrant-qemu` plugin, not the in-repo source.
@@ -46,6 +47,15 @@ module E2EHelper
     TEST_BOX_CLOUDINIT
   end
 
+  # The cloud-init box starts a snapd auto-refresh on first boot, and stopping
+  # snapd mid-refresh can hold guest shutdown for up to 90s. Destroy follows
+  # right after, so don't wait for it.
+  def snapd_fast_stop
+    <<~RUBY.chomp
+      config.vm.provision "shell", inline: "mkdir -p /etc/systemd/system/snapd.service.d && printf '[Service]\\\\nTimeoutStopSec=5s\\\\n' > /etc/systemd/system/snapd.service.d/e2e-fast-stop.conf && systemctl daemon-reload"
+    RUBY
+  end
+
   def vagrant_up(cwd, provider: "qemu", timeout: 300)
     run_vagrant_cmd("up", "--provider=#{provider}", cwd: cwd, timeout: timeout)
   end
@@ -65,7 +75,10 @@ module E2EHelper
     run_vagrant_cmd("reload", cwd: cwd, timeout: timeout)
   end
 
-  def vagrant_destroy(cwd, timeout: 60)
+  # Longer than the driver's own escalation (powerdown, then quit, each up to
+  # graceful_timeout) for two machines: killing vagrant mid-stop leaves the
+  # daemonized QEMU running and holding its ports for the next example.
+  def vagrant_destroy(cwd, timeout: 300)
     run_vagrant_cmd("destroy", "-f", cwd: cwd, timeout: timeout)
   end
 
