@@ -1,4 +1,5 @@
 require "fileutils"
+require "json"
 require "log4r"
 require "open3"
 require "shellwords"
@@ -23,6 +24,10 @@ module VagrantPlugins
 
       def prepare(machine, folders, opts)
         @logger = Log4r::Logger.new("vagrant_qemu::synced_folder_virtiofs")
+        machine.provider_config.virtiofs_qemu_args = []
+        memory = normalized_memory(machine.provider_config.memory) unless folders.empty?
+        cleanup(machine, {})
+        return if folders.empty?
 
         # Use /tmp for socket files — Unix domain sockets have a 104-byte path limit
         # on macOS, and Vagrant data_dir paths are often too long.
@@ -31,14 +36,15 @@ module VagrantPlugins
         FileUtils.mkdir_p(virtiofs_dir)
         socket_dir = Dir.tmpdir
         virtiofsd = machine.provider_config.virtiofsd_bin
-        memory = machine.provider_config.memory
-
-        mem_path = File.join(Dir.tmpdir, "vagrant-qemu-#{machine.id}-mem")
+        # QEMU creates and immediately unlinks its backing file when given a
+        # directory. No named guest RAM file remains after shutdown.
+        mem_path = Dir.tmpdir
         extra_args = %W(
           -object memory-backend-file,id=mem,size=#{memory},mem-path=#{mem_path},share=on
           -numa node,memdev=mem
         )
 
+        mounts = {}
         sorted_folders = folders.sort_by { |_id, opts| opts[:guestpath] }
         sorted_folders.each_with_index do |(_id, folder_opts), i|
           hostpath = File.expand_path(folder_opts[:hostpath])
@@ -73,8 +79,11 @@ module VagrantPlugins
           # Append user-supplied extra virtiofsd args from provider config
           extra_vfs = machine.provider_config.extra_virtiofsd_args
           virtiofsd_args += extra_vfs if extra_vfs.is_a?(Array) && !extra_vfs.empty?
-          pid = spawn(*virtiofsd_args, [:out, :err] => [log_file, "w"])
+          pid = spawn(*virtiofsd_args, in: File::NULL, [:out, :err] => [log_file, "w"], pgroup: true)
           waiter = Process.detach(pid)
+          # Record ownership before waiting so failed startup can be cleaned up.
+          File.write(pid_file, pid.to_s)
+          File.write(virtiofs_dir.join("#{tag}.sock_path").to_s, socket_path)
 
           # The socket path can appear before virtiofsd starts listening.
           30.times do
@@ -97,9 +106,7 @@ module VagrantPlugins
               log_file: log_file
           end
 
-          File.write(pid_file, pid.to_s)
-          # Store socket path alongside pid so cleanup can find it
-          File.write(virtiofs_dir.join("#{tag}.sock_path").to_s, socket_path)
+          mounts[tag] = folder_opts[:guestpath]
           machine.ui.info("virtiofsd started (pid #{pid}) sharing #{hostpath}")
 
           extra_args += %W(
@@ -109,7 +116,11 @@ module VagrantPlugins
         end
 
         # StartInstance combines these with user QEMU args for this start only.
+        File.write(virtiofs_dir.join("mounts.json"), JSON.generate(mounts))
         machine.provider_config.virtiofs_qemu_args = extra_args
+      rescue StandardError
+        cleanup(machine, preserve_logs: true)
+        raise
       end
 
       def enable(machine, folders, opts)
@@ -135,11 +146,23 @@ module VagrantPlugins
           File.delete(sock_path_file) if File.exist?(sock_path_file)
         end
 
-        FileUtils.rm_rf(virtiofs_dir)
+        if opts[:preserve_logs]
+          FileUtils.rm_f(virtiofs_dir.join("mounts.json"))
+        else
+          FileUtils.rm_rf(virtiofs_dir)
+        end
         machine.ui.info("virtiofsd stopped") if machine.ui
       end
 
       private
+
+      def normalized_memory(value)
+        match = /\A(\d+(?:\.\d+)?)([KMGT]?)\z/i.match(value.to_s)
+        unless match && match[1].to_f.positive?
+          raise Errors::ConfigError, err: "VirtioFS requires a positive qe.memory (MiB or a K/M/G/T suffix); nil is not supported."
+        end
+        "#{match[1]}#{match[2].empty? ? 'M' : match[2].upcase}"
+      end
 
       def process_alive?(pid)
         Process.kill(0, pid)

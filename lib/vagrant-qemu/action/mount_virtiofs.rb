@@ -1,4 +1,5 @@
 require "log4r"
+require "json"
 require "shellwords"
 
 module VagrantPlugins
@@ -13,20 +14,15 @@ module VagrantPlugins
         def call(env)
           machine = env[:machine]
 
-          # Find virtiofs synced folders from config
-          virtiofs_folders = machine.config.vm.synced_folders.select do |_id, data|
-            data[:type].to_s == "virtiofs" && !data[:disabled]
-          end
-
-          if virtiofs_folders.any?
-            sorted = virtiofs_folders.sort_by { |_id, data| data[:guestpath] }
-            sorted.each_with_index do |(_id, data), i|
-              guestpath = data[:guestpath]
-              tag = "virtiofs#{i}"
+          # prepare sees Vagrant's resolved folder types. Use precisely that
+          # mapping, including shares selected through allowed_synced_folder_types.
+          mounts_file = machine.data_dir.join("virtiofs", "mounts.json")
+          if mounts_file.file?
+            JSON.parse(File.read(mounts_file)).each do |tag, guestpath|
 
               escaped_guestpath = Shellwords.escape(guestpath)
               machine.communicate.sudo("mkdir -p #{escaped_guestpath}")
-              machine.communicate.sudo("mount -t virtiofs #{tag} #{escaped_guestpath}")
+              machine.communicate.sudo("mount -t virtiofs #{Shellwords.escape(tag)} #{escaped_guestpath}")
               machine.ui.info("Mounted virtiofs #{tag} at #{guestpath}")
             end
           end
