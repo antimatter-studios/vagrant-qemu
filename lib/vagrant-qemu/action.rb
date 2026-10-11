@@ -60,6 +60,7 @@ module VagrantPlugins
                 b3.use StopInstance
                 b3.use CleanupVirtioFS
                 b3.use Destroy
+                b3.use SyncedFolderCleanup
               end
             else
               b2.use MessageWillNotDestroy
@@ -138,7 +139,7 @@ module VagrantPlugins
             b1.use EnvSet, port_collision_repair: true
             b1.use PrepareForwardedPortCollisionParams
             b1.use HandleForwardedPortCollisions
-            b1.use CleanupVirtioFS
+            b1.use SyncedFolderCleanup
             b1.use ResetVirtioFSArgs
             b1.use SyncedFolders
             b1.use WarnNetworks
