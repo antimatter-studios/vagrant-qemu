@@ -39,6 +39,7 @@ Others:
 * Basic suport to forwarded ports, see [vagrant doc](https://www.vagrantup.com/docs/networking/forwarded_ports) for details
 * Support Cloud-init, see [vagrant doc](https://developer.hashicorp.com/vagrant/docs/cloud-init/usage) for details
 * Support Disks, see [vagrant doc](https://developer.hashicorp.com/vagrant/docs/disks/usage) for details
+* Advanced networking (opt-in): dual-NIC with `private_network` support via QEMU native vmnet (macOS), TAP (Linux), or a `socket` netdev — multicast (Linux/Windows) or point-to-point listen/connect (no root, works on macOS)
 
 ## Usage
 
@@ -81,20 +82,20 @@ This provider exposes a few provider-specific configuration options:
 
 * basic
   * `ssh_port` - The SSH port number used to access VM, default: `50022`
-  * `arch` - The architecture of VM, default: `aarch64`
-  * `machine` - The machine type of VM, default: `virt,accel=hvf,highmem=off`
-  * `cpu` - The cpu model of VM, default: `cortex-a72`
+  * `arch` - The architecture of VM, default: auto-detected from the host (`aarch64` on Apple Silicon, `x86_64` on Intel)
+  * `machine` - The machine type of VM, default: auto-detected from host OS + arch. For native virtualization (guest arch == host arch): `virt,highmem=on,accel=hvf` (arm64) / `q35,accel=hvf` (x86_64) on macOS, `accel=kvm` on Linux, `accel=whpx` on Windows. When emulating a non-host arch it uses `accel=tcg`.
+  * `cpu` - The cpu model of VM, default: `host` for native virtualization, `max` when emulating a non-host arch
   * `smp` - The smp setting (Simulate an SMP system with n CPUs) of VM, default: `2`
   * `memory` - The memory setting of VM, default: `4G`
   * `disk_resize` - The target disk size of the primary disk, requires resizing of filesystem inside of VM, default: `nil`.
 * debug/expert
   * `ssh_host` - The SSH IP used to access VM, default: `127.0.0.1`
   * `ssh_auto_correct` - Auto correct port collisions for ssh port, default: `false`
-  * `net_device` - The network device, default: `virtio-net-device`
+  * `net_device` - The network device, default: auto-detected — `virtio-net-device` (arm64 `virt`) or `virtio-net-pci` (x86_64 `q35`)
   * `drive_interface` - The interface type for the main drive, default `virtio`
   * `image_path` - The path (or array of paths) to qcow2 image for box-less VM, default is nil value
   * `qemu_bin` - Path to an alternative QEMU binary, default: autodetected
-  * `qemu_dir` - The path to QEMU's install dir, default: `/opt/homebrew/share/qemu`
+  * `qemu_dir` - The path to QEMU's data/firmware dir. Default resolution order: `ENV["QEMU_DIR"]` → `${HOMEBREW_PREFIX}/share/qemu` → per-host default (`/opt/homebrew/share/qemu` on Apple Silicon, `/usr/local/share/qemu` on Intel macOS, `/usr/share/qemu` on Linux). Only consumed for aarch64 firmware; ignored (and not validated) for x86_64.
   * `extra_qemu_args` - The raw list of additional arguments to pass to QEMU. Use with extreme caution. (see "Force Multicore" below as example)
   * `extra_netdev_args` - extra, comma-separated arguments to pass to the -netdev parameter. Use with caution. (see "Force Local IP" below as example)
   * `extra_drive_args` - Add optional extra arguments to each drive attached, default: `[]`
@@ -104,6 +105,16 @@ This provider exposes a few provider-specific configuration options:
   * `firmware_format` - The format of aarch64 firmware images (`edk2-aarch64-code.fd` and `edk2-arm-vars.fd`) loaded from `qemu_dir`, default: `raw`
   * `other_default` - The other default arguments used by this plugin, default: `%W(-parallel null -monitor none -display none -vga none)`
   * `extra_image_opts` - Options passed via `-o` to `qemu-img` when the base qcow2 images are created, default: `[]`
+  * `graceful_timeout` - Seconds to wait at each `vagrant halt` stage before escalating, default: `60`. Halt sends ACPI `system_powerdown`, waits up to this long, then sends QEMU's `quit` monitor command (a clean shutdown that flushes and closes the disk images), waits again, and finally SIGKILLs QEMU as a last resort — so halt still completes even when the guest was already halted from inside (e.g. `sudo systemctl halt`), where `system_powerdown` is a no-op
+* advanced networking (requires `advanced_network = true`)
+  * `advanced_network` - Enable dual-NIC advanced networking with `private_network` support, default: `false`
+  * `net_mode` - Network backend: `:auto` (detect by platform), `:vmnet_shared`, `:vmnet_host`, `:vmnet_bridged` (macOS, sudo), `:socket_vmnet` (macOS, no sudo — via the socket_vmnet daemon), `:tap` (Linux), `:socket` (QEMU `socket` netdev — multicast or point-to-point, see `socket_opts`), default: `:auto`
+  * `vmnet_interface` - Physical interface for vmnet-bridged mode, default: `en0`
+  * `tap_device` - TAP device name for Linux tap backend, default: `nil` (uses `tap0`)
+  * `mcast_addr` - Convenience shortcut for the `:socket` backend's multicast address, default: `nil` (uses `230.0.0.1:1234`)
+  * `socket_opts` - Raw options for the `:socket` netdev, emitted verbatim as `-netdev socket,id=netN,<socket_opts>`. You pick the mode: `"mcast=230.0.0.1:1234"` (multicast, N-way), `"listen=:1234"` / `"connect=127.0.0.1:1234"` (point-to-point; you decide which VM listens and which connects — the no-root, macOS-friendly path). Overrides `mcast_addr`. Default: `nil` (falls back to multicast)
+  * `socket_vmnet_socket` - Path to the socket_vmnet daemon's unix socket, used by the `:socket_vmnet` backend, default: `<homebrew-prefix>/var/run/socket_vmnet` (`HOMEBREW_PREFIX` env, else `/opt/homebrew` on Apple Silicon, `/usr/local` on Intel)
+  * `socket_vmnet_client` - Path to the `socket_vmnet_client` wrapper, used only on QEMU older than 7.2 (which lacks the native `stream` netdev), default: `<homebrew-prefix>/opt/socket_vmnet/bin/socket_vmnet_client`
 
 ### Usage
 
@@ -173,6 +184,11 @@ end
 ```
 
 4. Work with a x86_64 box (basic config)
+
+On an **Intel Mac** (or Linux x86_64 host) these defaults are now auto-detected,
+so a plain `config.vm.box = "..."` with no provider overrides is usually enough.
+The explicit settings below are only needed to **emulate** x86_64 on an Apple
+Silicon host (cross-arch → TCG):
 
 ```
 Vagrant.configure(2) do |config|
@@ -304,6 +320,118 @@ end
 
 See the [QEMU Documentation](https://www.qemu.org/docs/master/devel/multiple-iothreads.html) and [heiko-sieger.info/tuning-vm-disk-performance/](https://www.heiko-sieger.info/tuning-vm-disk-performance/) for more details.
 
+12. Advanced networking with private_network
+
+Pick a backend with `net_mode`: QEMU's native vmnet.framework on macOS (`:vmnet_shared`/`_host`/`_bridged`, requires sudo), `:socket_vmnet` on macOS (full host↔VM and VM↔VM **without** sudo, via the [socket_vmnet](https://github.com/lima-vm/socket_vmnet) daemon), TAP on Linux, or the `socket` netdev. The `:socket` backend is a thin wrapper around QEMU's `socket` netdev — you choose the mode in `socket_opts`: `mcast=` (multicast, N-way, Linux/Windows) or `listen=`/`connect=` (point-to-point, no root, works on macOS). The plugin creates two NICs: NIC 0 (user-mode for SSH and port forwarding) and NIC 1 (platform backend for VM networking). The static IP is delivered via a cloud-init NoCloud seed ISO that the plugin builds and attaches automatically; the NICs are matched by MAC address, never by interface order.
+
+For VM-to-VM networking on macOS without sudo, use `:socket` with a `listen`/`connect` pair — you decide which VM listens and which connects:
+
+```ruby
+Vagrant.configure("2") do |config|
+  PORT = 12399
+  # vm1 listens, vm2 connects to it.
+  config.vm.define "vm1" do |c|
+    c.vm.box = "perk/ubuntu-2204-arm64"  # an aarch64 cloud-init box
+    c.vm.network "private_network", ip: "192.168.105.51"
+    c.vm.provider "qemu" do |qe|
+      qe.advanced_network = true
+      qe.net_mode = :socket
+      qe.socket_opts = "listen=127.0.0.1:#{PORT}"
+      qe.ssh_auto_correct = true
+    end
+  end
+  # vm2 connects to vm1.
+  config.vm.define "vm2" do |c|
+    c.vm.box = "perk/ubuntu-2204-arm64"
+    c.vm.network "private_network", ip: "192.168.105.52"
+    c.vm.provider "qemu" do |qe|
+      qe.advanced_network = true
+      qe.net_mode = :socket
+      qe.socket_opts = "connect=127.0.0.1:#{PORT}"
+      qe.ssh_auto_correct = true
+    end
+  end
+end
+```
+
+Bring it up with `vagrant up --no-parallel`. The provider boots machines in parallel by default, so a plain `vagrant up` can start vm2 before vm1 is listening, and the link never comes up.
+
+A single VM with a static IP (vmnet is the default backend on macOS when `net_mode` is `:auto`):
+
+```ruby
+Vagrant.configure("2") do |config|
+  config.vm.box = "ppggff/centos-7-aarch64-2009-4K"
+  config.vm.network "private_network", ip: "192.168.105.10"
+
+  config.vm.provider "qemu" do |qe|
+    qe.advanced_network = true
+    # qe.net_mode = :vmnet_shared  # default on macOS when :auto
+  end
+end
+```
+
+Full networking on macOS **without sudo** with `:socket_vmnet` (host↔VM and VM↔VM, static IP):
+
+```ruby
+Vagrant.configure("2") do |config|
+  config.vm.box = "perk/ubuntu-2204-arm64"  # an aarch64 cloud-init box
+  config.vm.network "private_network", ip: "192.168.105.10"
+
+  config.vm.provider "qemu" do |qe|
+    qe.advanced_network = true
+    qe.net_mode = :socket_vmnet
+    # qe.socket_vmnet_socket = "/opt/homebrew/var/run/socket_vmnet"  # default (Homebrew prefix)
+  end
+end
+```
+
+Set up the daemon once (root, one-time), then run `vagrant up` as your normal user:
+
+```sh
+brew install socket_vmnet
+# Reserve a static-IP range so cloud-init IPs don't collide with the DHCP pool:
+sudo brew services start socket_vmnet   # or run it with explicit flags, e.g.:
+# sudo socket_vmnet --vmnet-gateway=192.168.105.1 --vmnet-dhcp-end=192.168.105.100 \
+#     /opt/homebrew/var/run/socket_vmnet
+```
+
+The `private_network` IP must sit inside the daemon's subnet (`--vmnet-gateway`, default
+`192.168.105.1/24`) and, to avoid a DHCP clash, above `--vmnet-dhcp-end`. Unlike the native vmnet
+backends, `:socket_vmnet` cannot tell the daemon which subnet to use — the daemon's launch flags are
+authoritative, so align the IP to them. On QEMU ≥ 7.2 the plugin connects to the daemon directly
+(`-netdev stream`); on older QEMU it automatically falls back to the `socket_vmnet_client` wrapper
+(configurable via `qe.socket_vmnet_client`).
+
+Notes:
+* The guest image must include cloud-init, otherwise the static IP is silently not applied
+* On macOS, vmnet requires root: run `sudo vagrant up` (and the other lifecycle commands such as `halt`/`reload`/`destroy`), because the plugin launches QEMU as a child of the Vagrant process and does not elevate it on its own. The plugin warns when vmnet is selected and Vagrant is not running as root.
+* Side effect of running under `sudo`: QEMU and everything it writes become **root-owned** — the per-VM data directory (`.vagrant/machines/<name>/qemu/` in your project) and any box Vagrant downloads while elevated (`~/.vagrant.d/boxes/<box>/`). A later command run **without** `sudo` then fails with `EACCES` — e.g. a plain `vagrant status`/`up`, an unprivileged test run, or switching to a rootless backend — often on the box's `box_update_check` file. To handle it, either keep using `sudo` consistently for that environment, or restore ownership:
+  ```sh
+  sudo chown -R "$(id -un)":staff ~/.vagrant.d/boxes/<box> .vagrant
+  ```
+  Pre-adding boxes as your normal user (`vagrant box add <box>`) before the first `sudo vagrant up` also avoids the box ending up root-owned.
+* To avoid root (and this side effect) entirely on macOS, use `net_mode = :socket_vmnet` (see the example above): the [`socket_vmnet`](https://github.com/lima-vm/socket_vmnet) daemon holds the root vmnet membership and QEMU connects to it as a normal user (the approach Lima/Colima/minikube take), so `vagrant up` and the other lifecycle commands need no sudo. The `com.apple.developer.networking.vmnet` entitlement could also bypass root in principle, but it is a *restricted* Apple entitlement that requires an Apple-provisioned signing certificate and cannot be ad-hoc / self-signed onto Homebrew's QEMU, so it is not a practical option for individual users.
+* Without `advanced_network = true`, the `private_network` configuration is ignored with a warning
+* When only one NIC is needed (no `private_network`), no cloud-init seed is attached, avoiding compatibility issues
+* Combining `advanced_network` with `config.vm.cloud_init` is supported: the plugin merges your user-data and the generated network-config into a single NoCloud seed
+* The Linux `:tap` backend expects a pre-created tap device attached to a bridge, e.g.:
+  `sudo ip tuntap add tap0 mode tap && sudo ip link set tap0 master br0 && sudo ip link set tap0 up`
+* `socket_opts = "mcast=..."` gives N-way VM-to-VM on Linux/Windows, but does **not** work on macOS: QEMU binds the netdev socket to the multicast group address, which the Darwin socket stack refuses to send from (`EADDRNOTAVAIL`). On macOS use a `listen`/`connect` pair (no root) or vmnet (sudo).
+* `socket_opts = "listen=..."` / `"connect=..."` is a point-to-point QEMU TCP link and connects **exactly two** VMs (QEMU's listening socket accepts a single connection — it is not a hub). You choose which VM listens and which connects. The listener must be running before the connector starts, so define the listener first and bring the environment up with `vagrant up --no-parallel` (a plain `vagrant up` boots both in parallel and may start the connector first: both VMs come up with their IPs, but no traffic passes). Starting a connector alone, or reloading the listener, drops the link.
+
+Platform support:
+
+| Platform | Backend (`net_mode`) | Host ↔ VM | VM ↔ VM | Root? | External dependency |
+|----------|---------|:---------:|:-------:|:-----:|:-------------------:|
+| macOS    | `:vmnet_shared`/`_host`/`_bridged` | Yes | Yes | sudo | None (QEMU >= 7.0) |
+| macOS    | `:socket_vmnet` | Yes | Yes | No | socket_vmnet daemon (`brew install socket_vmnet`) |
+| macOS    | `:socket` (`listen`/`connect`) | No (use port forwarding) | Yes (2 VMs) | No | None |
+| Linux    | `:tap` + bridge | Yes | Yes | sudo | Pre-created tap device + bridge (`ip` command) |
+| Linux    | `:socket` (`mcast`) | No (use port forwarding) | Yes | No | None |
+| Windows  | `:socket` (`mcast`) | No (use port forwarding) | Yes | No | None |
+
+(`socket_opts = "mcast=..."` is not usable on macOS — see the note above; use a `listen`/`connect` pair there.)
+
 ## Debug
 
 Serial port is exported to unix socket: `<user_home>/.vagrant.d/tmp/vagrant-qemu/<id>/qemu_socket_serial`, or `debug_port`.
@@ -382,6 +510,45 @@ vagrant plugin list | grep vagrant-qemu
 
 > This command will list all installed plugins, and you should see the vagrant-qemu plugin with the locally built version.
 
+### Testing
+
+Tests are RSpec, in three layers. GitHub Actions runs all of them on every pull request (`.github/workflows/ci.yml`); a new push to a pull request cancels its older run, and changes that only touch `*.md` files are not tested.
+
+| Layer | What | Where CI runs it |
+|---|---|---|
+| Unit (`spec/unit`) | Plugin code, no QEMU | Ubuntu, macOS, Windows |
+| Acceptance (`spec/acceptance`) | Vagrant actions against a mock `qemu` (bash scripts) | Ubuntu, macOS |
+| Guest smoke (`examples/ci-smoke`) | Boots a Debian guest: up, ssh, status, halt, destroy | Ubuntu, macOS, Windows WSL2 |
+| e2e (`spec/e2e`) | Real VMs: disks, forwarded ports, provision, reload, package, networking | Ubuntu with KVM; vmnet and socket_vmnet specs on macOS |
+
+CI uses the latest Vagrant release and prints the Ruby and Vagrant versions in each job. Hosted macOS runners have no HVF, so CI runs macOS guests with TCG; the HVF path is only tested locally.
+
+Run them locally:
+
+```sh
+# Unit and acceptance (fast, no real VM)
+bundle exec rake spec:unit
+bundle exec rake spec:acceptance
+
+# e2e exercises the INSTALLED plugin: rebuild and reinstall first (the
+# suite fails fast on a version mismatch)
+bundle exec rake build
+vagrant plugin install ./pkg/vagrant-qemu-<version>.gem
+TEST_QEMU=1 bundle exec rake spec:e2e
+
+# vmnet (macOS, needs sudo) and socket_vmnet (macOS, needs the daemon:
+# brew install socket_vmnet && sudo brew services start socket_vmnet)
+TEST_VMNET=1 sudo -E bundle exec rspec spec/e2e/advanced_network_spec.rb
+TEST_SOCKET_VMNET=1 bundle exec rspec spec/e2e/socket_vmnet_spec.rb
+```
+
+The e2e boxes default to Apple Silicon (aarch64) boxes; on another host set `TEST_BOX` and `TEST_BOX_CLOUDINIT` to boxes of the host architecture (CI uses `cloud-image/ubuntu-22.04` for both).
+
+Adding tests:
+
+* A new e2e example in `spec/e2e` tagged `:requires_qemu` runs in CI's Ubuntu e2e job without workflow changes.
+* A feature that needs extra host setup (a daemon, a tool such as `virtiofsd`, root) gets its own tag, an environment switch in `spec/spec_helper.rb` next to `TEST_VMNET`, and a workflow step that installs the dependency and sets the switch.
+
 ## Known issue / Troubleshooting
 
 ### 1. failed to create shared folder
@@ -442,25 +609,35 @@ If you get this error when running `vagrant up`
 
 ### 4. The box you're using with the QEMU provider ('default') is invalid
 
-This may cause by invalid default qemu dir (`/opt/homebrew/share/qemu`).
-
-You can find the correct one by:
+`qemu_dir` is auto-detected (Homebrew prefix / per-host default) and is only
+needed for **aarch64** firmware — x86_64 boots on SeaBIOS and no longer
+validates it. If detection still picks the wrong path for an aarch64 box
+(e.g. a MacPorts or custom QEMU install), set it explicitly. Find the correct
+one with:
 ```
 echo `brew --prefix`/share/qemu
 ```
 
-And then set it (for example `/usr/local/share/qemu`) in the `Vagrantfile` as:
+Then either export `QEMU_DIR` / `HOMEBREW_PREFIX`, or set it in the `Vagrantfile`:
 ```
 config.vm.provider "qemu" do |qe|
   qe.qemu_dir = "/usr/local/share/qemu"
 end
 ```
 
+### 5. `conflicting dependencies logger (= 1.6.0) and logger (= 1.6.1)` when installing the plugin
+
+This is a Vagrant 2.4.2 packaging bug (bundled `logger` gem version conflict),
+not a problem with this plugin — see
+[hashicorp/vagrant#13534](https://github.com/hashicorp/vagrant/issues/13534).
+Upgrade Vagrant to **2.4.3 or newer** (the Homebrew cask may lag; install the
+official build from [vagrantup.com](https://www.vagrantup.com/downloads) if
+needed). Do **not** work around it by pinning `logger` in a Gemfile — that tends
+to deepen the conflict.
+
 ## TODO
 
 * Support NFS shared folder
 * Support package VM to box
 * More configures
-* Better error messages
-* Network
 * GUI mode

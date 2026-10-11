@@ -94,9 +94,132 @@
 
 * Re-publish with repacked gem
 
-# 0.3.22 (2025-05-19)
+# 0.3.12 (2025-05-19)
 
 * Add support for extra `-drive` arguments
 * Add `extra_image_opts` to customize image creation
 * Add support for cloud-init and disks
 * Add support for resizing disk on vm setup
+
+# 0.4.1 (2026-06-22)
+
+* `vagrant halt` now reaps QEMU even when the guest was already halted from
+  inside (e.g. `sudo systemctl halt`), where the ACPI `system_powerdown` is a
+  no-op. Halt escalates: `system_powerdown` -> wait `graceful_timeout` -> QEMU
+  `quit` monitor command (clean: flushes and closes the disk images) -> wait
+  `graceful_timeout` -> SIGKILL as a last resort (#79)
+
+# 0.4.0 (2026-06-12)
+
+* Advanced networking (opt-in, `advanced_network = true`): dual-NIC `private_network`
+  support via vmnet (macOS), TAP (Linux), or the QEMU `socket` netdev, with
+  deterministic MAC addresses; static IP delivered through a plugin-built cloud-init
+  NoCloud seed ISO (MAC-matched, requires cloud-init in the guest). When
+  `config.vm.cloud_init` is also set, its user-data and the generated
+  network-config are merged into a single seed
+* `net_mode = :socket` is now a thin wrapper around QEMU's `socket` netdev: the new
+  `socket_opts` option is emitted verbatim, so you pick the mode yourself —
+  `"mcast=230.0.0.1:1234"` (multicast, N-way) or `"listen=:1234"` / `"connect=host:1234"`
+  (point-to-point, no root, works on macOS where multicast does not — QEMU binds the
+  socket to the multicast group address, which Darwin rejects for sending). For
+  listen/connect you decide which VM listens and which connects (it is a 1:1 link,
+  not a hub). `mcast_addr` remains as a shortcut for the multicast address
+* Fix SSH port not updated after forwarded-port collision auto-correction
+* Persist only needed runtime state in options.yml; harden YAML loading
+  (`safe_load`); `vagrant halt` reads back the persisted control_port
+* Graceful shutdown on halt with configurable `graceful_timeout` (default 60s),
+  force kill as fallback
+* Host-aware defaults for `arch`/`machine`/`cpu`/`net_device`/`qemu_dir`: detect
+  the host arch (Apple Silicon vs Intel) and OS, default to native acceleration
+  (`hvf`/`kvm`/`whpx`) with `cpu=host` when guest arch matches the host, and to
+  `accel=tcg`/`cpu=max` when emulating; resolve `qemu_dir` from
+  `QEMU_DIR`/`HOMEBREW_PREFIX`/per-host path; skip the `qemu_dir` check for
+  x86_64 (SeaBIOS) so Intel Macs no longer fail with "Invalid qemu dir" (#59, #50)
+* Validate the QEMU binary exists before starting the VM
+* Destroy failures now surface the underlying error and preserve the machine ID
+* Warn when private_network is configured without `advanced_network`, when the
+  network backend needs sudo, and when other unsupported network types are used
+* Add test suite: unit + acceptance + e2e (`rake spec:unit|acceptance|e2e`)
+
+# 0.5.0 (2026-07-11)
+
+* `vagrant package` is now supported: export a running QEMU VM into a
+  distributable libvirt-format box. The box disk is flattened from its qcow2
+  overlay into a standalone qcow2 with `qemu-img convert` (the live VM disk is
+  never modified). A single-disk VM produces `box.img`; a multi-disk VM
+  produces `box_1.img`..`box_N.img` plus a `disks[]` entry in `metadata.json`.
+  `metadata.json` is written with `provider: libvirt` / `format: qcow2` /
+  `virtual_size`, and a minimal default Vagrantfile declaring the box `arch` is
+  bundled. `--output`/`--include`/`--info`/`--vagrantfile` are handled by the
+  core packaging middleware. Environment-specific state — networking, MAC,
+  additional disks, DVDs/cloud-init seed ISOs, and firmware — is intentionally
+  not baked into the box.
+
+# 0.6.0 (2026-07-21)
+
+* `net_mode = :socket_vmnet` adds no-sudo private networking on macOS: the
+  [socket_vmnet](https://github.com/lima-vm/socket_vmnet) daemon holds the root
+  vmnet membership and QEMU connects to it as a normal user, so `vagrant up`
+  and the other lifecycle commands need no sudo. It reuses the advanced-network
+  dual-NIC + cloud-init path — NIC 0 user-mode (SSH + port forwarding), NIC 1
+  on socket_vmnet with the configured static IP — giving host↔VM and VM↔VM
+  connectivity. On QEMU >= 7.2 QEMU connects to the daemon directly
+  (`-netdev stream`); on older QEMU it falls back to the `socket_vmnet_client`
+  wrapper (`-netdev socket,fd=3`), chosen automatically by probing the QEMU
+  binary. New config: `socket_vmnet_socket` and `socket_vmnet_client` (default
+  to the Homebrew prefix). The static IP must fall within the daemon's subnet
+  (`--vmnet-gateway`, default `192.168.105.1/24`); see the README. (#41)
+
+# 0.6.1 (2026-07-22)
+
+* Fix `vagrant reload` (and any other same-process halt-then-start, e.g. the
+  `vagrant-reload` plugin) failing with a QEMU image write-lock error when a
+  custom disk (`config.vm.disk`) was configured. `configure_disks` re-runs on
+  every `action_start`, but the driver's attached-disk list only ever
+  accumulated, so a reload attached each custom disk twice on the same qemu
+  command line. (#41)
+* Fix `qemu-img create` unconditionally recreating an already-existing custom
+  disk on every `configure_disks` call, which silently wiped the disk's
+  contents on every reload (independent of the bug above — resizing an
+  existing disk to a new configured size still isn't supported).
+* Fix the cloud-init network seed ISO (used by `advanced_network` without a
+  core `cloud_init` user-data config, i.e. the `net_mode` examples above)
+  being re-registered as a duplicate disk on every same-process reload,
+  hitting the same QEMU write-lock error via a different disk.
+
+# 0.6.2 (2026-07-22)
+
+* Fix the default QEMU args crashing the VM on distros whose qemu-kvm build
+  doesn't include the legacy parallel port device (e.g. Rocky Linux, and
+  likely RHEL and other derivatives). `-parallel null` still instantiates
+  that device, just with its output discarded; `-parallel none` — now the
+  default — skips creating it entirely, matching how the other default args
+  (`-monitor`/`-display`/`-vga`) already disable their optional devices. (#80)
+
+# 0.6.3 (2026-08-12)
+
+* Fix `vagrant up` aborting with `no implicit conversion of nil into Array`
+  on macOS whenever `advanced_network` was enabled without also setting
+  `net_mode`. The default `net_mode` of `:auto` selects the vmnet backend but
+  was never resolved to a concrete mode, so the backend produced no `-netdev`
+  arguments for the private network NIC and the command line assembly blew up
+  before QEMU was launched. Setting `net_mode` explicitly (e.g.
+  `:vmnet_shared`) was the workaround. (#40)
+
+# 0.6.4 (2026-10-09)
+
+* Fix `vagrant up` failing with `ForwardPortCollision` ("The forwarded port
+  to 50022 is already in use") on macOS 27 even when nothing listens on the
+  port. A non-blocking connect to a closed local port there reports success
+  on the retry, so Vagrant's port check treated every port as in use. The
+  provider now supplies a port check that confirms the connection; results on
+  other systems are unchanged, and Windows keeps Vagrant's own check.
+* Quote MAC addresses in the generated cloud-init `network-config`. cloud-init
+  reads it as YAML 1.1, where an unquoted MAC whose octets are all decimal and
+  below 60 (e.g. `52:54:00:26:47:05`) is a base-60 integer. With
+  `advanced_network`, about 1.3% of generated MACs hit this, and the guest's
+  network config was rejected, which could leave the VM unreachable over SSH
+  on first boot. (#82, thanks @SamuelBoerlin)
+* README: bring a `socket_opts` `listen=`/`connect=` pair up with
+  `vagrant up --no-parallel`. A plain `vagrant up` boots both machines in
+  parallel, and if the connector starts first the link never comes up.
