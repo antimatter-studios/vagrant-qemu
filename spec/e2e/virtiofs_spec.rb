@@ -49,10 +49,19 @@ describe "VirtioFS folder lifecycle", :requires_virtiofs do
     end
   end
 
-  def expect_daemons_stopped(records)
+  def expect_daemons_stopped(records, sockets_removed: true)
     records.each do |record|
+      # Allow the host init process to reap a daemon killed during shutdown.
+      20.times do
+        begin
+          Process.kill(0, record[:pid])
+          sleep 0.1
+        rescue Errno::ESRCH
+          break
+        end
+      end
       expect { Process.kill(0, record[:pid]) }.to raise_error(Errno::ESRCH)
-      expect(File.exist?(record[:socket])).to eq(false)
+      expect(File.exist?(record[:socket])).to eq(false) if sockets_removed
     end
   end
 
@@ -71,7 +80,8 @@ describe "VirtioFS folder lifecycle", :requires_virtiofs do
     expect(running.length).to eq(2)
 
     successful(vagrant_reload(@project, timeout: 900))
-    expect_daemons_stopped(running)
+    # Reload starts new listeners at the same socket paths; old PIDs must die.
+    expect_daemons_stopped(running, sockets_removed: false)
     verify_shares
     running = daemons
 

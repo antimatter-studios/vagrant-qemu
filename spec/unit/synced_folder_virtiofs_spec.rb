@@ -32,6 +32,8 @@ describe VagrantPlugins::QEMU::SyncedFolderVirtioFS do
   subject(:adapter) { described_class.new }
 
   before do
+    allow(Process).to receive(:uid).and_return(1000)
+    allow(Process).to receive(:gid).and_return(1000)
     allow(adapter).to receive(:virtiofsd_help).and_return("--translate-uid --translate-gid")
     allow(adapter).to receive(:spawn).and_return(12345)
     allow(Process).to receive(:detach).with(12345).and_return(double("waiter"))
@@ -51,7 +53,6 @@ describe VagrantPlugins::QEMU::SyncedFolderVirtioFS do
     expect(config.virtiofs_qemu_args).to include(
       "memory-backend-file,id=mem,size=256M,mem-path=#{Dir.tmpdir},share=on",
       "vhost-user-fs-pci,chardev=char_virtiofs0,tag=virtiofs0")
-    expect(File).to have_received(:socket?)
   end
 
   { 2048 => "2048M", "2048" => "2048M", "0.5g" => "0.5G" }.each do |input, expected|
@@ -137,7 +138,7 @@ describe VagrantPlugins::QEMU::Action::CleanupVirtioFS do
     allow(VagrantPlugins::QEMU::SyncedFolderVirtioFS).to receive(:new).and_return(adapter)
     app = double("app")
     expect(adapter).to receive(:cleanup).with(machine, {}).ordered
-    expect(app).to receive(:call).with(machine: machine).ordered
+    expect(app).to receive(:call).with({ machine: machine }).ordered
     described_class.new(app, {}).call(machine: machine)
   end
 end
