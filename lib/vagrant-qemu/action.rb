@@ -9,8 +9,22 @@ module VagrantPlugins
       include Vagrant::Action::Builtin
 
       def self.action_package
-        lambda do |env|
-          raise Errors::NotSupportedError
+        Vagrant::Action::Builder.new.tap do |b|
+          b.use ConfigValidate
+          b.use Call, IsState, :not_created do |env, b2|
+            if env[:result]
+              b2.use MessageNotCreated
+              next
+            end
+
+            b2.use Vagrant::Action::General::PackageSetupFolders
+            b2.use Vagrant::Action::General::PackageSetupFiles
+            b2.use StopInstance
+            b2.use CleanupVirtioFS
+            b2.use Vagrant::Action::General::Package
+            b2.use Export
+            b2.use PackageVagrantfile
+          end
         end
       end
 
@@ -25,6 +39,7 @@ module VagrantPlugins
             end
 
             b2.use StopInstance
+            b2.use CleanupVirtioFS
           end
         end
       end
@@ -43,6 +58,7 @@ module VagrantPlugins
 
                 b3.use ProvisionerCleanup, :before if defined?(ProvisionerCleanup)
                 b3.use StopInstance
+                b3.use CleanupVirtioFS
                 b3.use Destroy
                 b3.use SyncedFolderCleanup
               end
@@ -116,6 +132,7 @@ module VagrantPlugins
             end
 
             b1.use CloudInitSetup
+            b1.use CloudInitNetwork
             b1.use CleanupDisks
             b1.use Disk
             b1.use Provision
@@ -123,11 +140,13 @@ module VagrantPlugins
             b1.use PrepareForwardedPortCollisionParams
             b1.use HandleForwardedPortCollisions
             b1.use SyncedFolderCleanup
+            b1.use ResetVirtioFSArgs
             b1.use SyncedFolders
             b1.use WarnNetworks
             b1.use SetHostname
             b1.use StartInstance
             b1.use WaitForCommunicator, [:running]
+            b1.use MountVirtioFS
           end
         end
       end
@@ -172,9 +191,15 @@ module VagrantPlugins
       autoload :Import, action_root.join("import")
       autoload :StartInstance, action_root.join("start_instance")
       autoload :StopInstance, action_root.join("stop_instance")
+      autoload :Export, action_root.join("export")
+      autoload :PackageVagrantfile, action_root.join("package_vagrantfile")
       autoload :Destroy, action_root.join("destroy")
+      autoload :CloudInitNetwork, action_root.join("cloud_init_network")
       autoload :TimedProvision, action_root.join("timed_provision") # some plugins now expect this action to exist
       autoload :WarnNetworks, action_root.join("warn_networks")
+      autoload :CleanupVirtioFS, action_root.join("cleanup_virtiofs")
+      autoload :MountVirtioFS, action_root.join("mount_virtiofs")
+      autoload :ResetVirtioFSArgs, action_root.join("reset_virtiofs_args")
       autoload :PrepareForwardedPortCollisionParams, action_root.join("prepare_forwarded_port_collision_params")
     end
   end

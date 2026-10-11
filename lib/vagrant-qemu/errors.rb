@@ -30,6 +30,32 @@ module VagrantPlugins
       class ConfigError < VagrantQEMUError
         error_key(:config_error)
       end
+      class VirtiofsdNotFound < VagrantQEMUError
+        error_key(:virtiofsd_not_found)
+      end
+      class VirtiofsdStartFailed < VagrantQEMUError
+        error_key(:virtiofsd_start_failed)
+      end
+
+      class QemuBinaryNotFound < VagrantQEMUError
+        error_key(:qemu_binary_not_found)
+      end
+
+      class DestroyError < VagrantQEMUError
+        error_key(:destroy_error)
+      end
+
+      class SocketVmnetNotMacos < VagrantQEMUError
+        error_key(:socket_vmnet_not_macos)
+      end
+
+      class SocketVmnetSocketNotFound < VagrantQEMUError
+        error_key(:socket_vmnet_socket_not_found)
+      end
+
+      class SocketVmnetClientNotFound < VagrantQEMUError
+        error_key(:socket_vmnet_client_not_found)
+      end
     end
   end
 end
