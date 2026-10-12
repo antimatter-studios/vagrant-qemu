@@ -1,0 +1,56 @@
+name: Primary disk feedback red and green
+
+on:
+  push:
+    branches: [codex/primary-disk-feedback-proof]
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    name: Disk feedback proof (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-15, windows-2022]
+    defaults:
+      run:
+        shell: bash
+    env:
+      FIX_COMMIT: 5466ec28f56cdfccf90d9e233ac91a965fccafd6
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - name: Prove the two missing user messages on upstream code
+        run: |
+          set +e
+          bundle exec rspec spec/unit/primary_disk_regressions_spec.rb spec/unit/cap/disk_spec.rb --format documentation --format json --out red.json
+          red_status=$?
+          set -e
+          test "$red_status" -eq 1
+          ruby -rjson -e 'r = JSON.parse(File.read("red.json")); failed = r.fetch("examples").select { |e| e.fetch("status") == "failed" }; expected = ["grows the existing boot overlay instead of attaching a blank disk", "never shrinks the boot disk to a smaller requested size"]; abort "unexpected regression failures" unless failed.map { |e| e.fetch("description") }.sort == expected.sort; puts "Confirmed both missing-message regressions; all other disk tests passed"'
+      - name: Apply the exact production fix
+        run: |
+          git fetch --no-tags origin "$FIX_COMMIT"
+          test "$(git rev-parse FETCH_HEAD)" = "$FIX_COMMIT"
+          git checkout FETCH_HEAD -- lib/vagrant-qemu/cap/disk.rb locales/en.yml
+      - name: Prove the fixed disk tests and full unit suite
+        run: |
+          bundle exec rspec spec/unit/primary_disk_regressions_spec.rb spec/unit/cap/disk_spec.rb --format documentation --format json --out green.json
+          bundle exec rake spec:unit
+      - name: Acceptance tests
+        if: runner.os != 'Windows'
+        run: bundle exec rake spec:acceptance
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: primary-disk-proof-${{ matrix.os }}
+          path: |
+            red.json
+            green.json

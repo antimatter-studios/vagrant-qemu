@@ -8,7 +8,13 @@ module VagrantPlugins
 
         def call(env)
           env[:ui].info(I18n.t("vagrant_qemu.destroying"))
-          env[:machine].provider.driver.delete
+          begin
+            env[:machine].provider.driver.delete
+          rescue => e
+            # Vagrant errors only render error_key translations; a bare
+            # String here would be silently dropped.
+            raise Errors::DestroyError, message: e.message
+          end
           env[:machine].id = nil
 
           @app.call(env)
