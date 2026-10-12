@@ -1,0 +1,94 @@
+require_relative "helper"
+require "net/http"
+
+describe "forwarded ports end-to-end", :requires_qemu do
+  around(:each) do |example|
+    with_temp_dir do |dir|
+      @work_dir = dir.join("project")
+      FileUtils.mkdir_p(@work_dir)
+      example.run
+      vagrant_destroy(@work_dir) rescue nil
+    end
+  end
+
+  it "forwards guest port to host" do
+    File.write(@work_dir.join("Vagrantfile"), <<~RUBY)
+      ENV["TEST_BOX"] = #{ENV.fetch("TEST_BOX", "cloud-image/debian-12").inspect}
+      ENV["FORWARDED_PORT"] = "18000"
+      load #{VagrantPlugins::QEMU.source_root.join("examples/forwarded-port/Vagrantfile").to_s.inspect}
+    RUBY
+
+    result = vagrant_up(@work_dir, timeout: 600)
+    expect(result[:exit_code]).to eq(0), "#{result[:stdout]}\n#{result[:stderr]}"
+
+    # QEMU can accept TCP even when nothing is listening in the guest.
+    # Require the actual guest HTTP response instead of a host-side bind.
+    response = Net::HTTP.start("127.0.0.1", 18000, nil,
+      open_timeout: 5, read_timeout: 10) { |http| http.get("/") }
+    expect(response.code).to eq("200")
+    expect(response.body).to eq("vagrant-qemu HTTP forwarding works\n")
+  end
+
+  it "user-defined forwarded_port auto-corrects when host port is in use" do
+    require 'socket'
+    # Hold the host port in this process so QEMU's hostfwd attempt would collide.
+    blocker = TCPServer.new("127.0.0.1", 28000)
+    begin
+      File.write(@work_dir.join("Vagrantfile"), <<~RUBY)
+        Vagrant.configure("2") do |config|
+          config.vm.box = "#{test_box}"
+        config.vm.box_check_update = false
+          config.vm.synced_folder ".", "/vagrant", disabled: true
+          config.vm.network "forwarded_port", guest: 80, host: 28000, auto_correct: true
+          config.vm.provider "qemu" do |qe|
+            qe.memory = "2G"
+          end
+        end
+      RUBY
+
+      # Without auto-correct, QEMU's hostfwd would fail to bind 28000 and `up` would error.
+      # Successful `up` proves Vagrant remapped the host port.
+      result = vagrant_up(@work_dir, timeout: 300)
+      expect(result[:exit_code]).to eq 0
+    ensure
+      blocker.close rescue nil
+    end
+  end
+
+  it "ssh_auto_correct allows multiple VMs" do
+    File.write(@work_dir.join("Vagrantfile"), <<~RUBY)
+      Vagrant.configure("2") do |config|
+        config.vm.define "vm1" do |c|
+          c.vm.box = "#{test_box}"
+          c.vm.box_check_update = false
+          c.vm.synced_folder ".", "/vagrant", disabled: true
+          c.vm.provider "qemu" do |qe|
+            qe.memory = "2G"
+            qe.ssh_auto_correct = true
+          end
+        end
+
+        config.vm.define "vm2" do |c|
+          c.vm.box = "#{test_box}"
+          c.vm.box_check_update = false
+          c.vm.synced_folder ".", "/vagrant", disabled: true
+          c.vm.provider "qemu" do |qe|
+            qe.memory = "2G"
+            qe.ssh_auto_correct = true
+          end
+        end
+      end
+    RUBY
+
+    result = vagrant_up(@work_dir, timeout: 600)
+    expect(result[:exit_code]).to eq 0
+
+    # Both VMs should be reachable via SSH
+    # Use vagrant_ssh helper which captures only the command output
+    r1 = vagrant_ssh(@work_dir.to_s, command: "echo ok")
+    r2_result = `cd #{@work_dir} && VAGRANT_CWD=#{@work_dir} vagrant ssh vm1 -c "echo ok" 2>&1`
+    r2_result2 = `cd #{@work_dir} && VAGRANT_CWD=#{@work_dir} vagrant ssh vm2 -c "echo ok" 2>&1`
+    expect(r2_result.lines.last.strip).to eq "ok"
+    expect(r2_result2.lines.last.strip).to eq "ok"
+  end
+end

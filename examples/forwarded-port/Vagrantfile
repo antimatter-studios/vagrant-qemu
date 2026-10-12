@@ -1,0 +1,50 @@
+# Debian/Ubuntu cloud boxes with systemd; defaults use the host architecture.
+Vagrant.configure("2") do |config|
+  config.vm.box = ENV.fetch("TEST_BOX", "cloud-image/debian-12")
+  config.vm.box_check_update = false
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  config.vm.network "forwarded_port", guest: 80,
+    host: Integer(ENV.fetch("FORWARDED_PORT", "8080")), host_ip: "127.0.0.1"
+
+  config.vm.provider "qemu" do |qemu|
+    qemu.memory = "1G"
+    qemu.qemu_dir = ENV["QEMU_DIR"] if ENV["QEMU_DIR"]
+  end
+
+  config.vm.provision "shell", inline: <<~SHELL
+    set -eu
+    if ! command -v python3 >/dev/null; then
+      apt-get update
+      apt-get install -y python3
+    fi
+    mkdir -p /var/lib/vagrant-forwarded-port
+    printf 'vagrant-qemu HTTP forwarding works\\n' > /var/lib/vagrant-forwarded-port/index.html
+    cat > /etc/systemd/system/vagrant-forwarded-port.service <<'SERVICE'
+    [Unit]
+    Description=Vagrant forwarded-port example
+    After=network.target
+    [Service]
+    ExecStart=/usr/bin/python3 -m http.server 80 --bind 0.0.0.0 --directory /var/lib/vagrant-forwarded-port
+    Restart=on-failure
+    [Install]
+    WantedBy=multi-user.target
+    SERVICE
+    systemctl daemon-reload
+    systemctl enable vagrant-forwarded-port.service
+    systemctl restart vagrant-forwarded-port.service
+    python3 - <<'PYTHON'
+    import time
+    import urllib.request
+    for attempt in range(50):
+        try:
+            with urllib.request.urlopen("http://127.0.0.1/", timeout=1) as response:
+                if response.read() == b"vagrant-qemu HTTP forwarding works\\n":
+                    break
+        except OSError:
+            pass
+        time.sleep(0.2)
+    else:
+        raise SystemExit("Guest HTTP server did not become ready")
+    PYTHON
+  SHELL
+end

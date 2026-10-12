@@ -18,7 +18,12 @@ vendor/**/*
 .vagrant
 Vagrantfile
 !example_box/Vagrantfile
+!examples/ci-smoke/Vagrantfile
+!examples/forwarded-port/Vagrantfile
 
 # RVM files for gemset/ruby setting
 .ruby-*
 .rvmrc
+
+# Local agent instructions, not part of the gem
+CLAUDE.md
