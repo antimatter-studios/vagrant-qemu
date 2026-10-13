@@ -1,4 +1,6 @@
 require "log4r"
+require "json"
+require "vagrant/util/numeric"
 
 module VagrantPlugins
   module QEMU
@@ -32,6 +34,11 @@ module VagrantPlugins
         # @param [VagrantPlugins::Kernel_V2::VagrantConfigDisk] defined_disks
         # @return [Hash] configured_disks - A hash of all the current configured disks
         def self.configure_disks(machine, defined_disks)
+          # Vagrant re-invokes this on every action_start (including a
+          # same-process reload), always passing the complete current disk
+          # list -- reset before the empty check so a disk removed from the
+          # Vagrantfile doesn't leave a stale entry attached either.
+          machine.provider.driver.reset_attached_drives!
           return {} if defined_disks.empty?
 
           configured_disks = {disk: [], floppy: [], dvd: []}
@@ -42,7 +49,7 @@ module VagrantPlugins
               disk_data = setup_disk(machine, disk)
               if !disk_data.empty?
                 configured_disks[:disk] << disk_data
-                machine.provider.driver.attach_disk(disk_data)
+                machine.provider.driver.attach_disk(disk_data) unless disk.primary
               end
             when :floppy
               machine.ui.info(I18n.t("vagrant_qemu.errors.floppy_unsupported"))
@@ -77,16 +84,48 @@ module VagrantPlugins
         # @param [Config::Disk] disk - the current disk to configure
         # @return [Hash] - disk_metadata
         def self.setup_disk(machine, disk)
+          return setup_primary_disk(machine, disk) if disk.primary
+
           disk_dir = machine.provider.driver.disk_dir
           disk_path = disk_dir.join("#{disk.name}.#{disk.disk_ext}")
-          args = ["create", "-f", "qcow2"]
 
           disk_provider_config = disk.provider_config[:qemu] if disk.provider_config
-          args.push(disk_path.to_s)
-          args.push("#{disk.size}")
-          machine.provider.driver.execute("qemu-img", *args)
+
+          # configure_disks re-runs on every action_start (including a
+          # same-process reload); qemu-img create truncates an existing file
+          # unconditionally, so skip it once the disk already exists instead
+          # of silently wiping it. Resizing an existing disk isn't handled.
+          if !disk_path.file?
+            args = ["create", "-f", "qcow2", disk_path.to_s, "#{disk.size}"]
+            machine.provider.driver.execute("qemu-img", *args)
+          end
 
           {UUID: disk.id, Name: disk.name, Path: disk_path.to_s, primary: !!disk.primary}
+        end
+
+        # The box's first overlay is already attached as disk0 by Driver#start.
+        # A primary disk declaration resizes that disk; attaching a new blank
+        # qcow2 would leave the guest's boot disk unchanged.
+        def self.setup_primary_disk(machine, disk)
+          driver = machine.provider.driver
+          path = driver.box_disk_paths.first
+          raise Errors::ConfigError, err: "Cannot resize primary disk: no box disk exists" if path.nil?
+
+          size = disk.size.is_a?(Integer) ? disk.size : Vagrant::Util::Numeric.string_to_bytes(disk.size)
+          raise Errors::ConfigError, err: "Primary disk size must be positive" unless size && size > 0
+
+          info = JSON.parse(driver.execute("qemu-img", "info", "--output=json", path.to_s))
+          current_size = info.fetch("virtual-size")
+          # Never shrink: a smaller target (or reload) must preserve guest data.
+          if size > current_size
+            machine.ui.detail(I18n.t("vagrant_qemu.primary_disk_growing",
+              name: disk.name, current_size: current_size, requested_size: size))
+            driver.execute("qemu-img", "resize", path.to_s, size.to_s)
+          elsif size < current_size
+            machine.ui.warn(I18n.t("vagrant_qemu.primary_disk_shrink_not_supported",
+              name: disk.name, current_size: current_size, requested_size: size))
+          end
+          {UUID: disk.id, Name: disk.name, Path: path.to_s, primary: true}
         end
 
         # Sets up all disk configs of type `:dvd`

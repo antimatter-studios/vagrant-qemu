@@ -7,8 +7,10 @@ require "vagrant/util/busy"
 require 'vagrant/util/io'
 require "vagrant/util/safe_chdir"
 require "vagrant/util/subprocess"
+require "vagrant/util/which"
 
 require_relative "plugin"
+require_relative "network"
 
 module VagrantPlugins
   module QEMU
@@ -18,12 +20,15 @@ module VagrantPlugins
       attr_reader :data_dir
       attr_reader :tmp_dir
       attr_reader :attached_drives
+      # @return [Integer, nil] Runtime SSH port (may differ from config after collision correction)
+      attr_reader :ssh_port
 
       def initialize(id, dir, tmp)
         @vm_id = id
         @data_dir = dir
         @tmp_dir = tmp.join("vagrant-qemu")
         @attached_drives = {disk: [], floppy: [], dvd: []}
+        @ssh_port = nil
         @logger = Log4r::Logger.new("vagrant_qemu::driver")
       end
 
@@ -61,9 +66,14 @@ module VagrantPlugins
           id_tmp_dir = @tmp_dir.join(@vm_id)
           FileUtils.mkdir_p(id_tmp_dir)
 
-          # dump options
+          # Persist only the runtime state we need to read back later
+          persisted_state = {
+            :ssh_port => options[:ssh_port],
+            :control_port => options[:control_port],
+            :debug_port => options[:debug_port],
+          }
           options_file = id_tmp_dir.join("options.yml")
-          File.write(options_file, options.to_yaml)
+          File.write(options_file, persisted_state.to_yaml)
 
           control_socket = ""
           if !options[:control_port].nil?
@@ -92,6 +102,12 @@ module VagrantPlugins
             end
           end
 
+          # Validate that the QEMU binary exists
+          qemu_binary = cmd.first
+          if !Vagrant::Util::Which.which(qemu_binary) && !File.executable?(qemu_binary)
+            raise Errors::QemuBinaryNotFound, binary: qemu_binary
+          end
+
           # basic
           cmd += %W(-machine #{options[:machine]}) if !options[:machine].nil?
           cmd += %W(-cpu #{options[:cpu]}) if !options[:cpu].nil?
@@ -99,20 +115,52 @@ module VagrantPlugins
           cmd += %W(-m #{options[:memory]}) if !options[:memory].nil?
 
           # network
+          launch_prefix = []
           if !options[:net_device].nil?
-            # net device
-            cmd += %W(-device #{options[:net_device]},netdev=net0)
+            private_networks = options[:private_networks] || []
+            use_advanced = options[:advanced_network] && !private_networks.empty?
 
-            # ports
-            hostfwd = "hostfwd=tcp::#{options[:ssh_port]}-:22"
-            options[:ports].each do |v|
-              hostfwd += ",hostfwd=#{v}"
+            if use_advanced
+              # Dual-NIC: NIC 0 = user-mode (SSH + port forwarding), NIC 1 = advanced backend
+              pn = private_networks.first
+              mac0, mac1 = Network.nic_macs(@vm_id, pn)
+
+              # NIC 0: user-mode
+              cmd += %W(-device #{options[:net_device]},netdev=net0,mac=#{mac0})
+              hostfwd = "hostfwd=tcp::#{options[:ssh_port]}-:22"
+              options[:ports].each do |v|
+                hostfwd += ",hostfwd=#{v}"
+              end
+              extra_netdev = ""
+              if !options[:extra_netdev_args].nil?
+                extra_netdev = ",#{options[:extra_netdev_args]}"
+              end
+              cmd += %W(-netdev user,id=net0,#{hostfwd}#{extra_netdev})
+
+              # NIC 1: platform-specific backend
+              # (the static-IP cloud-init seed is built and attached by the
+              # CloudInitNetwork action, not here)
+              backend = Network.backend_for(options[:net_mode])
+              backend.preflight!(options, qemu_binary)
+              cmd += %W(-device #{options[:net_device]},netdev=net1,mac=#{mac1})
+              cmd += backend.build_netdev_args("net1", options)
+              # launch_prefix is applied under the same gate as build_netdev_args
+              # (empty for every backend except socket_vmnet's wrapper route).
+              launch_prefix = backend.launch_prefix(options)
+            else
+              # Single NIC: user-mode only (original behavior, no cloud-init)
+              cmd += %W(-device #{options[:net_device]},netdev=net0)
+
+              hostfwd = "hostfwd=tcp::#{options[:ssh_port]}-:22"
+              options[:ports].each do |v|
+                hostfwd += ",hostfwd=#{v}"
+              end
+              extra_netdev = ""
+              if !options[:extra_netdev_args].nil?
+                extra_netdev = ",#{options[:extra_netdev_args]}"
+              end
+              cmd += %W(-netdev user,id=net0,#{hostfwd}#{extra_netdev})
             end
-            extra_netdev = ""
-            if !options[:extra_netdev_args].nil?
-              extra_netdev = ",#{options[:extra_netdev_args]}"
-            end
-            cmd += %W(-netdev user,id=net0,#{hostfwd}#{extra_netdev})
           end
 
           # drive
@@ -164,41 +212,154 @@ module VagrantPlugins
           # user-defined
           cmd += options[:extra_qemu_args]
 
+          # socket_vmnet wrapper route: launch qemu under socket_vmnet_client
+          # (empty prefix otherwise -> zero difference from the current path).
+          cmd = launch_prefix + cmd
+
           opts = {:detach => options[:no_daemonize]}
           execute(*cmd, **opts)
         end
       end
 
       def stop(options)
-        if running?
-          if !options[:control_port].nil?
-            Socket.tcp("localhost", options[:control_port], connect_timeout: 5) do |sock|
-              sock.print "system_powerdown\n"
-              sock.close_write
-              sock.read rescue nil
-            end
-          else
-            id_tmp_dir = @tmp_dir.join(@vm_id)
-            unix_socket_path = id_tmp_dir.join("qemu_socket").to_s
-            Socket.unix(unix_socket_path) do |sock|
-              sock.print "system_powerdown\n"
-              sock.close_write
-              sock.read rescue nil
-            end
+        return unless running?
+
+        opts = with_persisted_control_port(options)
+        timeout = options[:graceful_timeout] || 60
+
+        # 1. ACPI power button (graceful). Only works if a live guest OS is
+        #    there to act on it -- e.g. NOT after `systemctl halt`, which leaves
+        #    QEMU running with a halted, unresponsive guest.
+        unless options[:quit_only]
+          send_monitor(opts, "system_powerdown")
+          return unless still_running_after?(timeout)
+          @logger.warn("VM did not power down within #{timeout}s; sending 'quit' to QEMU")
+        end
+
+        # 2. Powerdown didn't take. Ask QEMU itself to quit: it stops the VM,
+        #    flushes and closes the qcow2 images, then exits cleanly. Does not
+        #    depend on the guest, only on the monitor being reachable.
+        send_monitor(opts, "quit")
+        return unless still_running_after?(timeout)
+
+        # 3. Last resort: SIGKILL the QEMU process (no flush/cleanup).
+        @logger.warn("VM still running after 'quit'; forcing kill")
+        force_kill
+      end
+
+      private
+
+      # QEMU unlinks its pidfile on exit, so the file can vanish between any
+      # existence check and the read: read it once and treat ENOENT as gone.
+      def read_pid
+        File.read(@tmp_dir.join(@vm_id).join("qemu.pid")).to_i
+      rescue Errno::ENOENT
+        nil
+      end
+
+      # Prefer the control_port the VM was actually started with (persisted
+      # in options.yml) so halt still works after a Vagrantfile edit.
+      def with_persisted_control_port(options)
+        options_file = @tmp_dir.join(@vm_id).join("options.yml")
+        return options if !options_file.file?
+
+        persisted = YAML.safe_load(File.read(options_file), permitted_classes: [Symbol]) rescue nil
+        return options if persisted.nil? || !persisted.key?(:control_port)
+
+        options.merge(:control_port => persisted[:control_port])
+      end
+
+      # Send a single QEMU monitor command over the control channel (TCP
+      # control_port if set, else the unix monitor socket). Best-effort: the
+      # socket may already be gone (e.g. QEMU exited from a prior command), so
+      # connection errors are swallowed.
+      # Drain replies until EOF with a deadline: immediately closing both
+      # halves can discard the command on QEMU's hangup event, while an
+      # unbounded read can bypass every shutdown timeout below.
+      def send_monitor(options, command)
+        monitor_timeout = [[options[:graceful_timeout] || 60, 1].max, 5].min
+        if !options[:control_port].nil?
+          # start binds the TCP monitor with ipv4=on; avoid an IPv6 localhost
+          # attempt (and its refused-connection delay on Windows).
+          Socket.tcp("127.0.0.1", options[:control_port], connect_timeout: 5) do |sock|
+            sock.print "#{command}\n"
+            sock.close_write
+            drain_monitor(sock, monitor_timeout)
           end
+        else
+          unix_socket_path = @tmp_dir.join(@vm_id).join("qemu_socket").to_s
+          Socket.unix(unix_socket_path) do |sock|
+            sock.print "#{command}\n"
+            sock.close_write
+            drain_monitor(sock, monitor_timeout)
+          end
+        end
+      rescue => e
+        @logger.debug("monitor command '#{command}' failed: #{e}") if @logger
+      end
+
+      def drain_monitor(sock, timeout)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+        loop do
+          remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+          break if remaining <= 0 || !IO.select([sock], nil, nil, remaining)
+          break if sock.read_nonblock(4096, exception: false).nil?
         end
       end
 
-      def get_ssh_port(ssh_port)
+      # Poll for up to `timeout` seconds. Return false as soon as the VM has
+      # stopped; return true if it is still running when the timeout elapses.
+      def still_running_after?(timeout)
+        timeout.times do
+          return false unless running?
+          sleep 1
+        end
+        running?
+      end
+
+      def force_kill
+        pid = read_pid
+        return if pid.nil? || pid <= 0
+
+        begin
+          Process.kill("KILL", pid)
+        rescue Errno::ESRCH
+          # Process already gone
+        end
+      end
+
+      public
+
+      # Prefer the endpoint used at launch, even if the Vagrantfile changed.
+      # Older instances did not persist debug_port, so use their configuration.
+      def serial_endpoint(default_port = nil)
+        return nil if @vm_id.nil?
+
+        runtime_dir = @tmp_dir.join(@vm_id)
+        options_file = runtime_dir.join("options.yml")
+        options = YAML.safe_load(File.read(options_file), permitted_classes: [Symbol]) rescue nil
+        port = default_port
+        port = options[:debug_port] if options.is_a?(Hash) && options.key?(:debug_port)
+
+        if port.nil?
+          { type: :unix, path: runtime_dir.join("qemu_socket_serial").to_s }
+        else
+          { type: :tcp, host: "127.0.0.1", port: port }
+        end
+      end
+
+      def get_ssh_port(default_port)
         id_tmp_dir = @tmp_dir.join(@vm_id)
         options_file = id_tmp_dir.join("options.yml")
 
+        port = default_port
         if options_file.file?
-          options = YAML.load_file(options_file) rescue nil
-          ssh_port = options[:ssh_port] if !options.nil? && options.key?(:ssh_port)
+          # safe_load + File.read (not safe_load_file) so older Psych works too
+          options = YAML.safe_load(File.read(options_file), permitted_classes: [Symbol]) rescue nil
+          port = options[:ssh_port] if !options.nil? && options.key?(:ssh_port)
         end
 
-        ssh_port
+        @ssh_port = port
       end
 
       def import(options)
@@ -252,11 +413,11 @@ module VagrantPlugins
       end
 
       def running?
-        pid_file = @tmp_dir.join(@vm_id).join("qemu.pid")
-        return false if !pid_file.file?
+        pid = read_pid
+        return false if pid.nil?
 
         begin
-          Process.kill(0, File.read(pid_file).to_i)
+          Process.kill(0, pid)
           true
         rescue Errno::ESRCH
           false
@@ -265,6 +426,7 @@ module VagrantPlugins
 
       def execute(*cmd, **opts, &block)
         result = nil
+        interrupted = false
 
         if opts && opts[:detach]
           # give it some time to startup
@@ -301,7 +463,7 @@ module VagrantPlugins
             readers = results[0]
 
             # Check if we have exceeded our timeout
-            return if (Time.now.to_i - start_time) > timeout
+            break if (Time.now.to_i - start_time) > timeout
 
             if readers && !readers.empty?
               readers.each do |r|
@@ -321,7 +483,8 @@ module VagrantPlugins
             stderr_writer.close
           end
 
-          result = ::Vagrant::Util::Subprocess::Result.new(process.exit_code, io_data[:stdout], io_data[:stderr])
+          exit_code = process.exited? ? process.exit_code : 0
+          result = ::Vagrant::Util::Subprocess::Result.new(exit_code, io_data[:stdout], io_data[:stderr])
         else
           # Append in the options for subprocess
           cmd << { notify: [:stdout, :stderr, :stdin] }
@@ -352,6 +515,14 @@ module VagrantPlugins
         end
       end
 
+      # Vagrant's Disk middleware always passes the *complete* current disk
+      # list and re-runs on every action_start (including a same-process
+      # reload, which reuses this Driver instance) -- so attach_disk/attach_dvd
+      # must be rebuilt from a clean slate each time, not accumulated across calls.
+      def reset_attached_drives!
+        @attached_drives = {disk: [], floppy: [], dvd: []}
+      end
+
       def attach_dvd(disk)
         @attached_drives[:dvd] << disk
       end
@@ -362,6 +533,25 @@ module VagrantPlugins
 
       def disk_dir
           @data_dir.join(@vm_id)
+      end
+
+      # Ordered paths of the box's disk overlays, reconstructed by index to
+      # match start/import (glob only counts; names rebuild by index so a
+      # two-digit suffix can't sort ahead of a single digit).
+      def box_disk_paths
+        id_dir = disk_dir
+        count = id_dir.glob("linked-box*.img").count
+        (0...count).map do |i|
+          suffix = i > 0 ? "-#{i}" : ""
+          id_dir.join("linked-box#{suffix}.img")
+        end
+      end
+
+      # Flatten a box disk overlay into a standalone qcow2 at dst. convert reads
+      # the whole backing chain and writes a fresh file, so the source overlay
+      # (the live VM disk) is never modified.
+      def convert_box_disk(src, dst)
+        execute("qemu-img", "convert", "-O", "qcow2", src.to_s, dst.to_s)
       end
     end
   end

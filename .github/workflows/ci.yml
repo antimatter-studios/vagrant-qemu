@@ -1,0 +1,304 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    paths-ignore: ['**.md']
+  pull_request:
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a PR cancels its older run. Other events are grouped per commit:
+# a group keeps one pending run, so sharing one would drop queued master commits.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  unit:
+    name: Unit specs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2022]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1.328.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - name: Versions
+        # PowerShell, the Windows default, strips the inner double quotes.
+        shell: bash
+        run: |
+          bundle exec ruby -e 'puts RUBY_DESCRIPTION; puts "Vagrant #{Gem.loaded_specs.fetch("vagrant").version}"'
+      - run: bundle exec rake spec:unit
+      # The mock qemu and qemu-img binaries are bash scripts.
+      - if: runner.os != 'Windows'
+        run: bundle exec rake spec:acceptance
+
+  guest-smoke:
+    name: QEMU guest smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+            qemu: qemu-system-x86_64
+          - os: macos-15
+            arch: arm64
+            qemu: qemu-system-aarch64
+    env:
+      VAGRANT_HOME: /tmp/vagrant-qemu-ci-home
+      CI_TEST_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1.328.0
+        with:
+          ruby-version: '3.3'
+      - name: Install QEMU on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils libarchive-tools
+      - name: Install QEMU on macOS
+        if: runner.os == 'macOS'
+        run: brew install qemu
+      - name: Install Vagrant and the plugin from this commit
+        run: |
+          gem install vagrant --no-document
+          gem build vagrant-qemu.gemspec
+          vagrant plugin install "$(find "$PWD" -maxdepth 1 -name 'vagrant-qemu-*.gem' -print -quit)"
+      - name: Boot sample guest
+        working-directory: examples/ci-smoke
+        run: |
+          set -euo pipefail
+          {
+            git rev-parse HEAD
+            uname -a
+            ruby -v
+            vagrant --version
+            ${{ matrix.qemu }} --version
+            vagrant up --provider=qemu --no-provision
+            vagrant serial-config --json > "$RUNNER_TEMP/serial-config.json"
+            ruby -rjson -e 'r = JSON.parse(File.read(ARGV[0])).find { |m| m["machine"] == "default" }; e = r.fetch("endpoint"); abort "incorrect serial endpoint" unless e["type"] == "unix" && File.socket?(e.fetch("path"))' "$RUNNER_TEMP/serial-config.json"
+            vagrant ssh -c 'uname -a'
+            vagrant status --machine-readable
+            vagrant halt
+          } 2>&1 | tee "$RUNNER_TEMP/guest-smoke.log"
+      - name: Verify the documented packaging recipe
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          # Hosted macOS runners lack HVF; match the smoke guest's TCG setup.
+          cat > "$VAGRANT_HOME/Vagrantfile" <<'RUBY'
+          Vagrant.configure("2") do |config|
+            config.vm.provider "qemu" do |qe|
+              qe.machine = ENV.fetch("CI_TEST_ARCH") == "arm64" ? "virt,highmem=on,accel=tcg" : "q35,accel=tcg"
+              qe.cpu = "max"
+            end
+          end
+          RUBY
+          examples/package-roundtrip/run.sh "$RUNNER_TEMP/package-recipe" 2>&1 | tee "$RUNNER_TEMP/package-recipe.log"
+      - name: Destroy sample guest
+        if: always()
+        working-directory: examples/ci-smoke
+        run: vagrant destroy -f
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: guest-smoke-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/guest-smoke.log
+            ${{ runner.temp }}/package-recipe.log
+
+  wsl2-guest-smoke:
+    name: QEMU guest smoke (Windows WSL2)
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Vampire/setup-wsl@d1da7f2c0322a5ee4f24975344f67fc0f5baf364 # v7.0.0
+        with:
+          distribution: Ubuntu-24.04
+      - name: Install Linux tools in WSL2
+        shell: wsl-bash {0}
+        run: |
+          test "$(uname -r | grep -ci microsoft)" -gt 0
+          uname -a
+          apt-get update
+          apt-get install -y ruby-full ruby-dev build-essential qemu-system-x86 qemu-utils libarchive-tools
+      - name: Install the plugin inside WSL2
+        shell: wsl-bash {0}
+        run: |
+          # Keep VM images on the WSL filesystem rather than the Windows-mounted checkout.
+          cp -a . /tmp/vagrant-qemu-ci-source
+          cd /tmp/vagrant-qemu-ci-source
+          gem install vagrant --no-document
+          gem build vagrant-qemu.gemspec
+          VAGRANT_HOME=/tmp/vagrant-qemu-ci-home vagrant plugin install "$(find "$PWD" -maxdepth 1 -name 'vagrant-qemu-*.gem' -print -quit)"
+      - name: Boot sample guest inside WSL2
+        shell: wsl-bash {0}
+        run: |
+          export VAGRANT_HOME=/tmp/vagrant-qemu-ci-home CI_TEST_ARCH=amd64 VAGRANT_DEFAULT_PROVIDER=qemu
+          cd /tmp/vagrant-qemu-ci-source/examples/ci-smoke
+          git rev-parse HEAD
+          uname -a
+          ruby -v
+          vagrant --version
+          qemu-system-x86_64 --version
+          vagrant up --provider=qemu --no-provision
+          vagrant serial-config --json > /tmp/serial-config.json
+          ruby -rjson -e 'r = JSON.parse(File.read(ARGV[0])).find { |m| m["machine"] == "default" }; e = r.fetch("endpoint"); abort "incorrect serial endpoint" unless e["type"] == "unix" && File.socket?(e.fetch("path"))' /tmp/serial-config.json
+          vagrant ssh -c 'uname -a'
+          vagrant status --machine-readable
+          vagrant halt
+      - name: Verify the documented packaging recipe inside WSL2
+        shell: wsl-bash {0}
+        run: |
+          export VAGRANT_HOME=/tmp/vagrant-qemu-ci-home CI_TEST_ARCH=amd64 VAGRANT_DEFAULT_PROVIDER=qemu
+          cd /tmp/vagrant-qemu-ci-source
+          cat > "$VAGRANT_HOME/Vagrantfile" <<'RUBY'
+          Vagrant.configure("2") do |config|
+            config.vm.provider "qemu" do |qe|
+              qe.machine = "q35,accel=tcg"
+              qe.cpu = "max"
+            end
+          end
+          RUBY
+          examples/package-roundtrip/run.sh /tmp/package-recipe
+      - name: Destroy WSL2 sample guest
+        if: always()
+        shell: wsl-bash {0}
+        run: |
+          if [ -d /tmp/vagrant-qemu-ci-source/examples/ci-smoke ]; then
+            cd /tmp/vagrant-qemu-ci-source/examples/ci-smoke
+            VAGRANT_HOME=/tmp/vagrant-qemu-ci-home VAGRANT_DEFAULT_PROVIDER=qemu vagrant destroy -f
+          fi
+
+  e2e:
+    name: e2e specs (ubuntu-24.04)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # Short: QEMU's monitor socket path under VAGRANT_HOME must stay below 104 bytes.
+      VAGRANT_HOME: /tmp/vq-home
+      TEST_QEMU: '1'
+      TEST_BOX: cloud-image/ubuntu-22.04
+      TEST_BOX_CLOUDINIT: cloud-image/ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1.328.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - name: Enable KVM
+        run: |
+          if [ -e /dev/kvm ]; then
+            echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+            sudo udevadm control --reload-rules
+            sudo udevadm trigger --name-match=kvm
+          fi
+          ls -l /dev/kvm || echo "no /dev/kvm"
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils libarchive-tools genisoimage
+      - name: Install Vagrant and the plugin from this commit
+        run: |
+          gem install vagrant --no-document
+          gem build vagrant-qemu.gemspec
+          vagrant plugin install "$(find "$PWD" -maxdepth 1 -name 'vagrant-qemu-*.gem' -print -quit)"
+      - name: Fall back to TCG without KVM
+        run: |
+          mkdir -p "$VAGRANT_HOME"
+          if [ -w /dev/kvm ]; then
+            echo "KVM available; using the provider defaults"
+          else
+            cat > "$VAGRANT_HOME/Vagrantfile" <<'RUBY'
+          Vagrant.configure("2") do |config|
+            config.vm.boot_timeout = 600
+            config.vm.provider "qemu" do |qe|
+              qe.machine = "q35,accel=tcg"
+              qe.cpu = "max"
+            end
+          end
+          RUBY
+            cat "$VAGRANT_HOME/Vagrantfile"
+          fi
+      - name: Versions
+        run: |
+          ruby -v
+          vagrant --version
+          qemu-system-x86_64 --version
+      - run: bundle exec rspec --profile 30 spec/e2e
+
+  e2e-macos-network:
+    name: e2e network specs (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 75
+    env:
+      VAGRANT_HOME: /tmp/vq-home
+      TEST_BOX_CLOUDINIT: cloud-image/ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@e81a8fa391b11a595c1b7ed84177cc0fe02faf83 # v1.328.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+      - name: Install QEMU, socket_vmnet, Vagrant and the plugin
+        run: |
+          brew install qemu socket_vmnet
+          gem install vagrant --no-document
+          gem build vagrant-qemu.gemspec
+          vagrant plugin install "$(find "$PWD" -maxdepth 1 -name 'vagrant-qemu-*.gem' -print -quit)"
+      # Hosted macOS runners are VMs without Hypervisor.framework, so no HVF.
+      - name: Use TCG
+        run: |
+          mkdir -p "$VAGRANT_HOME"
+          cat > "$VAGRANT_HOME/Vagrantfile" <<'RUBY'
+          Vagrant.configure("2") do |config|
+            # Two TCG guests booting in parallel can exceed the default 300 s.
+            config.vm.boot_timeout = 600
+            config.vm.provider "qemu" do |qe|
+              qe.machine = "virt,highmem=on,accel=tcg"
+              qe.cpu = "max"
+            end
+          end
+          RUBY
+      - name: Versions
+        run: |
+          ruby -v
+          vagrant --version
+          qemu-system-aarch64 --version
+      - name: vmnet specs
+        run: sudo -E env "PATH=$PATH" TEST_VMNET=1 bundle exec rspec --profile 30 spec/e2e/advanced_network_spec.rb
+      # The vmnet run as root leaves root-owned files under VAGRANT_HOME.
+      - name: Give VAGRANT_HOME back to the runner user
+        if: ${{ !cancelled() }}
+        run: sudo chown -R "$(id -u):$(id -g)" "$VAGRANT_HOME"
+      - name: Start socket_vmnet
+        if: ${{ !cancelled() }}
+        run: |
+          sudo brew services start socket_vmnet
+          for i in $(seq 1 20); do [ -S "$(brew --prefix)/var/run/socket_vmnet" ] && break; sleep 1; done
+          ls -l "$(brew --prefix)/var/run/socket_vmnet"
+      - name: socket_vmnet specs
+        if: ${{ !cancelled() }}
+        run: TEST_SOCKET_VMNET=1 bundle exec rspec --profile 30 spec/e2e/socket_vmnet_spec.rb
+      - name: socket_vmnet daemon log
+        if: failure()
+        run: sudo cat "$(brew --prefix)/var/log/socket_vmnet/stderr" || true
+      - name: Leftover QEMU processes and SSH listeners
+        if: failure()
+        run: |
+          ps -Ao pid,ppid,user,etime,args | grep '[q]emu-system' || true
+          sudo lsof -nP -iTCP:50022 -iTCP:2200 -sTCP:LISTEN || true
