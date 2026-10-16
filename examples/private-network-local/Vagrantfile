@@ -1,0 +1,19 @@
+Vagrant.configure("2") do |config|
+  config.vm.box = "cloud-image/debian-12"
+  config.vm.box_check_update = false
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+  { "vm1" => 51, "vm2" => 52 }.each do |name, suffix|
+    config.vm.define name do |vm|
+      vm.vm.network "private_network", ip: "192.168.105.#{suffix}"
+      vm.vm.provider "qemu" do |qemu|
+        qemu.memory = "1G"
+        qemu.smp = "1"
+        qemu.ssh_port = 50100 + suffix
+        qemu.qemu_dir = ENV["QEMU_DIR"] if ENV["QEMU_DIR"]
+        qemu.advanced_network = true
+        qemu.net_mode = :socket
+        qemu.socket_opts = name == "vm1" ? "listen=127.0.0.1:12399" : "connect=127.0.0.1:12399"
+      end
+    end
+  end
+end
